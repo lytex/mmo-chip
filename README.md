@@ -60,3 +60,5 @@ Build and test:
 npm run build
 npm test
 ```
+
+**IMPORTANT NOTE:** This software is still very early in development and has been tested only locally (firewalled). Use at your own risk.
