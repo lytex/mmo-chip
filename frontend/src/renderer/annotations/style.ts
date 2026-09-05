@@ -93,6 +93,24 @@ export const NET_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> 
 /** Default base color for unselected wires + vertices (legacy viewer blue). */
 export const NET_COLOR = NET_COLOR_OPTIONS[0].value;
 
+/** Palette offered for the persistent per-net highlight color (picked from
+ *  the inspector for one or more selected nets). Wider than
+ *  `NET_COLOR_OPTIONS` — it's a "make this net stand out" tool, not a global
+ *  base-color choice, so it includes warm hues too. Deliberately excludes the
+ *  amber selection accent so a highlighted net doesn't look "selected" when
+ *  it isn't. */
+export const NET_HIGHLIGHT_COLOR_OPTIONS: ReadonlyArray<{ label: string; value: string }> = [
+  { label: "Red", value: "#ef4444" },
+  { label: "Orange", value: "#f97316" },
+  { label: "Yellow", value: "#facc15" },
+  { label: "Green", value: "#34d399" },
+  { label: "Cyan", value: "#22d3ee" },
+  { label: "Blue", value: "#2e97ff" },
+  { label: "Violet", value: "#a78bfa" },
+  { label: "Magenta", value: "#e879f9" },
+  { label: "White", value: "#ffffff" }
+];
+
 /** Per-conductor-layer wire color. "unknown" (absent layer) is intentionally
  *  not here — it falls back to the user-configurable base net color. Chosen
  *  bright/opaque and mutually distinct (orange / teal / violet). */

@@ -66,7 +66,7 @@ export function buildNetAnnotation(
       const mlMode = getMatchWidth();
       const screenWidth = netScreenWidth(bounds.zoom, getWidth());
       const worldWidth = mlMode ? getWidth() : screenWidth / bounds.zoom;
-      const baseColor = getColor();
+      const baseColor = net.color ?? getColor();
       const whole = state.selected;
       const edgeSel = (e: AnnotationNet["edges"][number]) =>
         whole || state.isSelected(edgeSubId(e.id));
@@ -82,7 +82,7 @@ export function buildNetAnnotation(
       const byColor = new Map<string, AnnotationNet["edges"]>();
       for (const e of net.edges) {
         if (edgeSel(e)) continue;
-        const col = e.layer ? WIRE_LAYER_COLOR[e.layer] : baseColor;
+        const col = net.color ?? (e.layer ? WIRE_LAYER_COLOR[e.layer] : baseColor);
         const list = byColor.get(col);
         if (list) list.push(e);
         else byColor.set(col, [e]);

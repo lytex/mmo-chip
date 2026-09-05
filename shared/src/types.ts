@@ -64,6 +64,11 @@ export interface AnnotationNet {
   name: string;
   nodes: AnnotationNetNode[];
   edges: AnnotationNetEdge[];
+  /** User-assigned persistent highlight color (hex). Overrides both the
+   *  default base net color and any per-edge conductor-layer color, so a
+   *  net the user has picked out stays visually distinct whether or not
+   *  it's currently selected. Absent ⇒ falls back to normal coloring. */
+  color?: string;
 }
 
 export interface AnnotationRect {

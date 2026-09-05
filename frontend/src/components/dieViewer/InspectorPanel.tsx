@@ -1,7 +1,7 @@
 import { useState, type ReactNode } from "react";
 import { useQueryClient } from "@tanstack/react-query";
-import type { DieAnnotations, MLInferenceJob, WireLayer } from "shared";
-import type { ActionDispatcher } from "../../api/actions";
+import type { AnnotationNet, DieAnnotations, MLInferenceJob, WireLayer } from "shared";
+import type { ActionDispatcher, AnnotationAction } from "../../api/actions";
 import {
   exportMlData,
   mlJobKey,
@@ -17,8 +17,10 @@ import {
   isMlViaId,
   type MLViasLayer
 } from "../../renderer/layers/MLViasLayer";
+import { NET_HIGHLIGHT_COLOR_OPTIONS } from "../../renderer/annotations/style";
 import { useDieViewerStore } from "../../state/dieViewer";
 import { usePreferences } from "../../state/preferences";
+import { ColorSwatches } from "./SettingsPopover";
 import { WireLayerSelect } from "./WireLayerSelect";
 import { AnnotationClassSelect } from "./AnnotationClassSelect";
 
@@ -98,6 +100,60 @@ function NameField({
 
 const short = (id: string) => (id.length > 10 ? id.slice(0, 8) + "…" : id);
 
+function stripNetColor(n: AnnotationNet): AnnotationNet {
+  const { color: _drop, ...rest } = n;
+  return rest;
+}
+
+/** Persistent highlight-color picker for one or more nets — used both for a
+ *  single selected net and for a multi-net selection (batched into one undo
+ *  step). Swatch shows "on" only when every target already shares that exact
+ *  color; a mixed or unset selection shows none active. */
+function NetColorPicker({
+  netIds,
+  nets,
+  dispatcher
+}: {
+  netIds: string[];
+  nets: AnnotationNet[];
+  dispatcher: ActionDispatcher;
+}) {
+  const targets = netIds
+    .map((id) => nets.find((n) => n.id === id))
+    .filter((n): n is AnnotationNet => !!n);
+  const colors = new Set(targets.map((n) => n.color ?? ""));
+  const value = colors.size === 1 ? [...colors][0] : "";
+  const hasAnyColor = targets.some((n) => n.color);
+
+  const apply = (color: string | null) => {
+    if (targets.length === 0) return;
+    const actions: AnnotationAction[] = targets.map((n) => ({
+      kind: "upsertNet",
+      net: color ? { ...n, color } : stripNetColor(n),
+      prevNet: n
+    }));
+    void dispatcher.dispatch(
+      actions.length === 1 ? actions[0] : { kind: "batch", actions }
+    );
+  };
+
+  return (
+    <div className="row" style={{ gap: 8, alignItems: "center", flexWrap: "wrap" }}>
+      <ColorSwatches options={NET_HIGHLIGHT_COLOR_OPTIONS} value={value} onPick={apply} />
+      {hasAnyColor && (
+        <button
+          type="button"
+          className="btn"
+          style={{ padding: "2px 7px", fontSize: 10, cursor: "pointer" }}
+          onClick={() => apply(null)}
+        >
+          Clear
+        </button>
+      )}
+    </div>
+  );
+}
+
 interface Resolved {
   typeLabel: string;
   displayName: string;
@@ -164,7 +220,18 @@ function resolve(
             net: { ...n, name },
             prevNet: n
           })
-      }
+      },
+      rows: [
+        [
+          "color",
+          <NetColorPicker
+            key="color"
+            netIds={[n.id]}
+            nets={ann.nets}
+            dispatcher={dispatcher}
+          />
+        ]
+      ]
     };
     if (net.part === "edge" && net.partId) {
       const e = n.edges.find((x) => x.id === net.partId);
@@ -357,6 +424,19 @@ function resolve(
 
 const cap = (s: string) => (s ? s[0].toUpperCase() + s.slice(1) : s);
 
+/** Distinct net ids across a selection, or null if any selected id isn't a
+ *  net (whole net, or a segment/vertex sub-part) — coloring only applies to
+ *  an all-net selection. */
+function distinctNetIds(ids: ReadonlySet<string>): string[] | null {
+  const out = new Set<string>();
+  for (const id of ids) {
+    const parsed = parseNetPartId(id);
+    if (!parsed) return null;
+    out.add(parsed.netId);
+  }
+  return [...out];
+}
+
 function splitId(id: string): [string, string] {
   const i = id.indexOf(":");
   return i < 0 ? [id, ""] : [id.slice(0, i), id.slice(i + 1)];
@@ -434,7 +514,37 @@ function InspectorBody({
 }) {
   if (!annotations) return <Empty>loading…</Empty>;
   if (ids.size === 0) return <Empty>Nothing selected</Empty>;
-  if (ids.size > 1) return <Empty>{ids.size} items selected</Empty>;
+
+  if (ids.size > 1) {
+    const netIds = distinctNetIds(ids);
+    if (netIds) {
+      return (
+        <div>
+          <div style={{ padding: "10px 12px", borderBottom: "1px solid var(--l1)" }}>
+            <div className="u">Nets</div>
+            <div
+              style={{
+                fontSize: 15,
+                fontWeight: 600,
+                color: "var(--ink)",
+                marginTop: 3
+              }}
+            >
+              {netIds.length} nets selected
+            </div>
+          </div>
+          <Prop label="color">
+            <NetColorPicker
+              netIds={netIds}
+              nets={annotations.nets}
+              dispatcher={dispatcher}
+            />
+          </Prop>
+        </div>
+      );
+    }
+    return <Empty>{ids.size} items selected</Empty>;
+  }
 
   const only = ids.values().next().value as string;
   const r = resolve(only, annotations, dispatcher, mlViasLayer);
