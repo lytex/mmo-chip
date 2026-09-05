@@ -47,6 +47,12 @@ interface PreferencesState {
   cellSnapToGuides: boolean;
   /** Per-net color overrides, keyed by `net:<netId>`. Absent = use `netColor`. */
   netColors: Record<string, string>;
+  /** When true, per-net color overrides (`netColors`) render on the canvas.
+   *  When false, they're kept (nothing is lost) but every net falls back to
+   *  its per-conductor-layer color, so the die reads by metal/silicon type
+   *  instead of by net. Toggle lets the user flip between the two views
+   *  without re-picking colors. Default true (custom colors visible). */
+  customNetColorsEnabled: boolean;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
@@ -214,6 +220,12 @@ interface PreferencesActions {
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
   setNetColorOverride: (netId: string, color: string | null) => void;
+  /** Override color for several nets at once (multi-select bulk assign).
+   *  null = clear all of them back to the global/layer default. */
+  setNetColorsForIds: (netIds: string[], color: string | null) => void;
+  /** Toggle whether per-net color overrides render on the canvas (see
+   *  `customNetColorsEnabled`). */
+  setCustomNetColorsEnabled: (enabled: boolean) => void;
   /** Set colour for a specific conductor layer (metal1, metal2, poly, etc.). */
   setWireLayerColor: (layer: string, color: string) => void;
   /** Toggle auto-via placement on cross-layer snap. */
@@ -320,6 +332,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netWidth: NET_DEFAULT_WIDTH,
         netColor: NET_COLOR,
         netColors: {},
+        customNetColorsEnabled: true,
         cellColor: CELL_COLOR,
         cellShowShapes: true,
         cellSnapToGuides: false,
@@ -420,6 +433,25 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             }
             return { netColors: { ...state.netColors, [netId]: color } };
           }),
+        setNetColorsForIds: (netIds, color) =>
+          set((state) => {
+            const next = { ...state.netColors };
+            let changed = false;
+            for (const netId of netIds) {
+              if (color === null || color === state.netColor) {
+                if (netId in next) {
+                  delete next[netId];
+                  changed = true;
+                }
+              } else if (next[netId] !== color) {
+                next[netId] = color;
+                changed = true;
+              }
+            }
+            return changed ? { netColors: next } : state;
+          }),
+        setCustomNetColorsEnabled: (enabled) =>
+          set({ customNetColorsEnabled: enabled }),
         setCellColor: (color) => set({ cellColor: color }),
         setCellShowShapes: (show) => set({ cellShowShapes: show }),
         setCellSnapToGuides: (snap) => set({ cellSnapToGuides: snap }),
@@ -612,6 +644,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reLayerHidden: state.reLayerHidden,
           reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
+          customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,

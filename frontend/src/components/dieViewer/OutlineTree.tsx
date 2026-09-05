@@ -88,12 +88,27 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const netColors = usePreferences((s) => s.netColors);
   const globalNetColor = usePreferences((s) => s.netColor);
   const setNetColorOverride = usePreferences((s) => s.setNetColorOverride);
+  const setNetColorsForIds = usePreferences((s) => s.setNetColorsForIds);
 
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
   const expandedGroups = useDieViewerStore((s) => s.expandedGroups);
   const toggleGroup = useDieViewerStore((s) => s.toggleGroup);
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
+
+  // Whole-net ids present in the current selection — includes nets selected
+  // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
+  // so a canvas marquee/shift-click selection can drive the bulk color picker
+  // too, not just multi-select in this list.
+  const selectedNetIds = useMemo(() => {
+    const ids = new Set<string>();
+    for (const id of selectedIds) {
+      if (!id.startsWith("net:")) continue;
+      const netId = id.split("/")[0];
+      ids.add(netId);
+    }
+    return Array.from(ids);
+  }, [selectedIds]);
 
   // Overlay layers (user-loaded images).
   const overlayLayers = useOverlayLayers((s) => s.layers);
@@ -315,7 +330,17 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         expand={isOpen("net") ? "open" : "closed"}
         label="Nets"
         meta={q ? `${filteredNets.length}/${annotations.nets.length}` : annotations.nets.length}
-        controls={<NetSettingsButton />}
+        controls={
+          <>
+            {selectedNetIds.length >= 2 && (
+              <BulkNetColorButton
+                count={selectedNetIds.length}
+                onPick={(c) => setNetColorsForIds(selectedNetIds, c)}
+              />
+            )}
+            <NetSettingsButton />
+          </>
+        }
         visibility={visibilityFor("net")}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
@@ -339,7 +364,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 />
               }
               selected={selectedIds.has(id)}
-              onSelect={() => select([id])}
+              onSelect={(e) =>
+                select([id], e.shiftKey || e.metaKey || e.ctrlKey ? "toggle" : "replace")
+              }
               onDoubleClick={() => focus([id])}
             />
           );
@@ -782,16 +809,15 @@ const SWATCH_TRIGGER = (color: string) => (
   />
 );
 
-function NetColorSettings({ netId, currentColor, onPick }: {
-  netId: string;
+/** Preset swatches + a custom hex color input, shared by the per-net and
+ *  bulk (multi-select) color pickers. */
+function NetColorPickerBody({ currentColor, onPick }: {
   currentColor: string;
   onPick: (color: string | null) => void;
 }) {
+  const customColor = /^#[0-9a-f]{6}$/i.test(currentColor) ? currentColor : "#2e97ff";
   return (
-    <SettingsPopover label="Net color" triggerContent={SWATCH_TRIGGER(currentColor)}>
-      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
-        Override color
-      </div>
+    <>
       <div style={{ display: "flex", gap: 4, flexWrap: "wrap", maxWidth: 140 }}>
         {NET_OVERRIDE_COLORS.map((c, i) => {
           const label = c === null
@@ -820,6 +846,64 @@ function NetColorSettings({ netId, currentColor, onPick }: {
           );
         })}
       </div>
+      <div className="row" style={{ gap: 8, marginTop: 10, alignItems: "center" }}>
+        <input
+          type="color"
+          value={customColor}
+          onChange={(e) => onPick(e.target.value)}
+          title="Pick a custom color"
+          style={{
+            width: 28, height: 22, padding: 0, cursor: "pointer",
+            border: "1px solid var(--l2)", borderRadius: 3, background: "none"
+          }}
+        />
+        <span style={{ fontSize: 10, color: "var(--ink3)" }}>Custom color</span>
+      </div>
+    </>
+  );
+}
+
+function NetColorSettings({ netId, currentColor, onPick }: {
+  netId: string;
+  currentColor: string;
+  onPick: (color: string | null) => void;
+}) {
+  return (
+    <SettingsPopover label="Net color" triggerContent={SWATCH_TRIGGER(currentColor)}>
+      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
+        Override color
+      </div>
+      <NetColorPickerBody currentColor={currentColor} onPick={onPick} />
+    </SettingsPopover>
+  );
+}
+
+/** Multi-select bulk color assign — appears in the Nets section header once
+ *  2+ nets are selected (canvas shift-click/marquee or ctrl/cmd-click in this
+ *  list). Applies one color persistently to every selected net at once. */
+function BulkNetColorButton({ count, onPick }: {
+  count: number;
+  onPick: (color: string | null) => void;
+}) {
+  const trigger = (
+    <span style={{ display: "inline-flex", alignItems: "center", gap: 3, fontSize: 9, color: "var(--ink2)" }}>
+      <span
+        style={{
+          width: 8, height: 8, borderRadius: 1,
+          background: "linear-gradient(135deg, #2e97ff 50%, #ef4444 50%)",
+          border: "1px solid rgba(0,0,0,0.15)",
+          flex: "0 0 auto"
+        }}
+      />
+      {count}
+    </span>
+  );
+  return (
+    <SettingsPopover label={`Color ${count} selected nets`} triggerContent={trigger}>
+      <div className="u" style={{ marginBottom: 6, fontSize: 10 }}>
+        Color {count} selected nets
+      </div>
+      <NetColorPickerBody currentColor="" onPick={onPick} />
     </SettingsPopover>
   );
 }
@@ -900,6 +984,8 @@ function NetSettingsButton() {
   const setNetNodeSize = usePreferences((s) => s.setNetNodeSize);
   const netNodeVisible = usePreferences((s) => s.netNodeVisible);
   const setNetNodeVisible = usePreferences((s) => s.setNetNodeVisible);
+  const customNetColorsEnabled = usePreferences((s) => s.customNetColorsEnabled);
+  const setCustomNetColorsEnabled = usePreferences((s) => s.setCustomNetColorsEnabled);
   const metalStack = useSession((s) => s.metalStack ?? DEFAULT_METAL_STACK);
 
   return (
@@ -922,6 +1008,31 @@ function NetSettingsButton() {
         >
           {width.toFixed(1)}
         </span>
+      </div>
+
+      <div className="u" style={{ margin: "12px 0 8px" }}>
+        Color mode
+      </div>
+      <div className="row" style={{ gap: 4 }}>
+        <button
+          type="button"
+          className={"btn sm" + (customNetColorsEnabled ? " on" : "")}
+          onClick={() => setCustomNetColorsEnabled(true)}
+        >
+          By net (custom)
+        </button>
+        <button
+          type="button"
+          className={"btn sm" + (!customNetColorsEnabled ? " on" : "")}
+          onClick={() => setCustomNetColorsEnabled(false)}
+        >
+          By metal/silicon type
+        </button>
+      </div>
+      <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, margin: "6px 0 12px" }}>
+        {customNetColorsEnabled
+          ? "Nets with a custom color below render in that color; others fall back to layer colors."
+          : "Custom net colors are hidden — every net renders by its metal/silicon layer color. Your per-net assignments are kept."}
       </div>
 
       <div className="u" style={{ margin: "12px 0 8px" }}>

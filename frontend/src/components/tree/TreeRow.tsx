@@ -14,7 +14,9 @@ export type TreeRowProps = {
   dimmed?: boolean;
   monoLabel?: boolean;
   onToggleExpand?: () => void;
-  onSelect?: () => void;
+  /** Click on the row body. Receives the mouse event so callers that support
+   *  multi-select (e.g. the net list) can branch on shift/ctrl/cmd. */
+  onSelect?: (e: React.MouseEvent) => void;
   /** Double-click the row (e.g. to frame this entity in the viewport). */
   onDoubleClick?: () => void;
   /** Triple-click the row (e.g. to solo layer selectability). */
@@ -79,7 +81,7 @@ export function TreeRow({
               e.stopPropagation();
               // Triple-click fires on the 3rd click's onClick event.
               if (onTripleClick && e.detail === 3) onTripleClick();
-              else if (onSelect) onSelect();
+              else if (onSelect) onSelect(e);
             }
           : undefined
       }

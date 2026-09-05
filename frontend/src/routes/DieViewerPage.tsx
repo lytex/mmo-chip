@@ -681,6 +681,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       },
       netOverrideColor: (netId: string) => {
         const prefs = usePreferences.getState();
+        if (!prefs.customNetColorsEnabled) return null;
         return prefs.netColors[netId] ?? null;
       },
       cellColor: () => usePreferences.getState().cellColor,
@@ -740,7 +741,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   // + net node size/visibility pref changes → invalidate the canvas.
   useEffect(() => {
     const unsubs = (
-      ["netWidth", "netColor", "cellColor", "cellShowShapes", "viaSize",
+      ["netWidth", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
        "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
