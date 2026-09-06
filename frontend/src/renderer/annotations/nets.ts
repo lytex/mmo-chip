@@ -5,7 +5,7 @@ import {
   segmentIntersectsRect,
   type Rect
 } from "../../lib/geometry";
-import type { Annotation } from "../layers/AnnotationLayer";
+import { UNTAGGED_LAYER, type Annotation } from "../layers/AnnotationLayer";
 import {
   NET_NODE_RADIUS_MULT,
   PICK,
@@ -116,7 +116,9 @@ export function buildNetAnnotation(
       const byColor = new Map<string, AnnotationNet["edges"]>();
       for (const e of net.edges) {
         if (edgeSel(e)) continue;
-        if (state.layerFilter && e.layer !== state.layerFilter) continue;
+        if (state.layerFilter === UNTAGGED_LAYER) {
+          if (e.layer) continue;
+        } else if (state.layerFilter && e.layer !== state.layerFilter) continue;
         const layerCol = e.layer && (getLayerColor?.(e.layer) ?? WIRE_LAYER_COLOR[e.layer]);
         const col = netOverrideColor ?? layerCol ?? baseColor;
         const list = byColor.get(col);

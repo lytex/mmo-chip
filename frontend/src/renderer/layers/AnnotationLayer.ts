@@ -2,6 +2,9 @@ import RBush from "rbush";
 import { pointInRectTolerant, type Rect } from "../../lib/geometry";
 import type { Layer, TileBounds } from "../types";
 
+/** Sentinel `layerFilter` value selecting net edges with no `layer` set. */
+export const UNTAGGED_LAYER = "__untagged__";
+
 /** Per-annotation render state passed into `draw`. */
 export interface AnnotationDrawState {
   /** True if this annotation's own id is in the selection set. When true the
@@ -14,7 +17,11 @@ export interface AnnotationDrawState {
   /** When set, only draw edges belonging to this conductor layer
    *  (e.g. "metal1", "metal2"). Used by the AnnotationLayer for z-ordered
    *  multi-pass rendering: it draws all metal1 edges from all net
-   *  annotations in one pass, then all metal2 edges on top. */
+   *  annotations in one pass, then all metal2 edges on top.
+   *  `UNTAGGED_LAYER` selects edges with no `layer` at all — legacy wires
+   *  (e.g. imported from a tool version that predates per-edge layer
+   *  stamping) that would otherwise never match any pass and stay
+   *  invisible forever. */
   layerFilter?: string;
   /** Render pass for vias: "body" = shape only (drawn before nets),
    *  "label" = text only (drawn after nets). */
@@ -321,10 +328,12 @@ export class AnnotationLayer implements Layer {
       h.annotation.draw(ctx, bounds, viaBodyState);
     }
 
-    // Nets — multi-pass by conductor layer: metal1 → metal2 → metal3+.
-    // This guarantees ALL metal1 edges from ALL nets draw underneath ALL
-    // metal2 edges, regardless of per-net drawOrder.
-    const LAYER_PASSES = ["metal1", "metal2", "poly", "metal3", "metal4", "metal5", "metal6"];
+    // Nets — multi-pass by conductor layer: untagged → metal1 → metal2 →
+    // metal3+. This guarantees ALL metal1 edges from ALL nets draw underneath
+    // ALL metal2 edges, regardless of per-net drawOrder. The untagged pass
+    // goes first (drawn like an underlay) so legacy edges with no `layer`
+    // still render instead of silently vanishing.
+    const LAYER_PASSES = [UNTAGGED_LAYER, "metal1", "metal2", "poly", "metal3", "metal4", "metal5", "metal6"];
     for (const layer of LAYER_PASSES) {
       const layerState: AnnotationDrawState = { ...state, layerFilter: layer };
       for (const h of nets) {
