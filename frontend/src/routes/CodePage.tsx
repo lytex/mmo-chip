@@ -4,6 +4,7 @@ import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
 import { CodeViewer, type CodeViewerHandle } from "../components/code/CodeViewer";
+import { EditableCodeViewer, type EditableCodeViewerHandle } from "../components/code/EditableCodeViewer";
 import { CodeOutline } from "../components/code/CodeOutline";
 import { ProblemsPanel } from "../components/code/ProblemsPanel";
 import { useDie } from "../api/dies";
@@ -58,6 +59,7 @@ function Code({ dieId }: { dieId: string }) {
 
   // ── Page-local UI state ──────────────────────────────────────────
   const viewerRef = useRef<CodeViewerHandle | null>(null);
+  const editorRef = useRef<EditableCodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [problemsOpen, setProblemsOpen] = useState(false);
   const [search, setSearch] = useState("");
@@ -66,6 +68,16 @@ function Code({ dieId }: { dieId: string }) {
   const [matchTotal, setMatchTotal] = useState(0);
   const [copied, setCopied] = useState(false);
   const searchRef = useRef<HTMLInputElement | null>(null);
+
+  // ── Tentative Verilog editing ──────────────────────────────────────
+  // `manualSource` is null while the tab just mirrors the generated Verilog.
+  // Once the user edits it, it holds their hand-typed text instead. Unlike
+  // the analog Netlist tab, there's no reverse Verilog→schematic parser here,
+  // so the outline/problems panels stay tied to the generated source — only
+  // the text itself (view, copy, download) reflects the edit.
+  const [manualSource, setManualSource] = useState<string | null>(null);
+  const [codeEditing, setCodeEditing] = useState(false);
+  const editorSource = manualSource ?? code.data?.source ?? "";
 
   // Reset match navigation whenever the query or the document changes —
   // otherwise a stale `matchIndex` can outlive a smaller match set.
@@ -101,10 +113,11 @@ function Code({ dieId }: { dieId: string }) {
   const goToLine = useCallback((line: number) => {
     setSelectedLine(line);
     viewerRef.current?.goToLine(line);
+    editorRef.current?.goToLine(line);
   }, []);
 
   const onCopy = useCallback(async () => {
-    const text = code.data?.source;
+    const text = editorSource;
     if (!text) return;
     try {
       await navigator.clipboard.writeText(text);
@@ -112,10 +125,10 @@ function Code({ dieId }: { dieId: string }) {
     } catch {
       // Most likely a non-secure-context error; fall through silently.
     }
-  }, [code.data?.source]);
+  }, [editorSource]);
 
   const onDownload = useCallback(() => {
-    const text = code.data?.source;
+    const text = editorSource;
     if (!text) return;
     const blob = new Blob([text], { type: "text/plain;charset=utf-8" });
     const url = URL.createObjectURL(blob);
@@ -126,7 +139,7 @@ function Code({ dieId }: { dieId: string }) {
     a.click();
     document.body.removeChild(a);
     URL.revokeObjectURL(url);
-  }, [code.data]);
+  }, [editorSource, code.data]);
 
   // ── Search input keyboard: Enter / Shift+Enter / Esc ─────────────
   const onSearchKey = (e: React.KeyboardEvent<HTMLInputElement>) => {
@@ -170,6 +183,30 @@ function Code({ dieId }: { dieId: string }) {
       <SubBar
         right={
           <>
+            {manualSource !== null && (
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setManualSource(null)}
+                title="Discard your edits and go back to the generated Verilog"
+                style={{ color: "var(--accent)", fontWeight: 600 }}
+              >
+                ✎ tentative · revert
+              </button>
+            )}
+            <button
+              type="button"
+              className={"btn" + (codeEditing ? " on" : "")}
+              onClick={() => setCodeEditing((v) => !v)}
+              title={
+                codeEditing
+                  ? "Stop editing — back to read-only view"
+                  : "Edit the generated Verilog by hand"
+              }
+            >
+              {codeEditing ? "✓ editing" : "✎ edit"}
+            </button>
+            <ToolDivider />
             <button
               type="button"
               className={
@@ -210,17 +247,21 @@ function Code({ dieId }: { dieId: string }) {
               {Ic.download}
               <span style={{ marginLeft: 4 }}>{code.data?.fileName ?? "download"}</span>
             </button>
-            <ToolDivider />
-            <SearchInput
-              value={search}
-              onChange={setSearch}
-              onKeyDown={onSearchKey}
-              onFocus={() => setSearchFocused(true)}
-              onBlur={() => setSearchFocused(false)}
-              matchIndex={matchIndex}
-              matchTotal={matchTotal}
-              inputRef={searchRef}
-            />
+            {!codeEditing && (
+              <>
+                <ToolDivider />
+                <SearchInput
+                  value={search}
+                  onChange={setSearch}
+                  onKeyDown={onSearchKey}
+                  onFocus={() => setSearchFocused(true)}
+                  onBlur={() => setSearchFocused(false)}
+                  matchIndex={matchIndex}
+                  matchTotal={matchTotal}
+                  inputRef={searchRef}
+                />
+              </>
+            )}
           </>
         }
       >
@@ -268,18 +309,31 @@ function Code({ dieId }: { dieId: string }) {
           }}
         >
           {code.data ? (
-            <CodeViewer
-              ref={viewerRef}
-              source={code.data.source}
-              markers={code.data.problems
-                .filter((p) => p.line != null)
-                .map((p) => ({ line: p.line!, severity: p.severity }))}
-              selectedLine={selectedLine ?? undefined}
-              onSelectLine={setSelectedLine}
-              search={search}
-              matchIndex={matchTotal > 0 ? matchIndex : undefined}
-              onMatchTotal={setMatchTotal}
-            />
+            codeEditing ? (
+              <EditableCodeViewer
+                ref={editorRef}
+                value={editorSource}
+                onChange={setManualSource}
+                placeholder="Edit the generated Verilog…"
+              />
+            ) : (
+              <CodeViewer
+                ref={viewerRef}
+                source={editorSource}
+                markers={
+                  manualSource === null
+                    ? code.data.problems
+                        .filter((p) => p.line != null)
+                        .map((p) => ({ line: p.line!, severity: p.severity }))
+                    : []
+                }
+                selectedLine={selectedLine ?? undefined}
+                onSelectLine={setSelectedLine}
+                search={search}
+                matchIndex={matchTotal > 0 ? matchIndex : undefined}
+                onMatchTotal={setMatchTotal}
+              />
+            )
           ) : (
             <ViewerPlaceholder
               loading={code.loading}

@@ -18,6 +18,7 @@ import { AppShell } from "../components/shell/AppShell";
 import { StatusBar } from "../components/shell/StatusBar";
 import { SubBar, ToolDivider } from "../components/shell/SubBar";
 import { CodeViewer, type CodeViewerHandle } from "../components/code/CodeViewer";
+import { EditableCodeViewer, type EditableCodeViewerHandle } from "../components/code/EditableCodeViewer";
 import { TreeRow, TreeSep } from "../components/tree/TreeRow";
 import { useDie } from "../api/dies";
 import { useAnnotations } from "../api/annotations";
@@ -186,9 +187,19 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const [rightView, setRightView] = useState<"code" | "graph" | "schematic" | "lvs">(assistantView ?? "code");
   const [selectedRegion, setSelectedRegion] = useState<string | null>(null);
   const viewerRef = useRef<CodeViewerHandle | null>(null);
+  const editorRef = useRef<EditableCodeViewerHandle | null>(null);
   const [selectedLine, setSelectedLine] = useState<number | null>(null);
   const [selectedInstance, setSelectedInstance] = useState<string | null>(null);
   const [copied, setCopied] = useState(false);
+
+  // ── Tentative netlist editing (Code tab → Schematic link) ─────────
+  // `manualNetlist` is null while the Code tab just mirrors the generated
+  // netlist. Once the user edits it, it holds their hand-typed text, which
+  // fully overrides the schematic (see `manualSource` on SchematicViewPanel)
+  // so a tentative circuit can be sketched before real extraction exists.
+  const [manualNetlist, setManualNetlist] = useState<string | null>(null);
+  const [codeEditing, setCodeEditing] = useState(false);
+  const editorSource = manualNetlist ?? netlist.data?.source ?? "";
   const assistantFragment = useMemo(
     () => assistantInstances.length > 0 && netlist.data?.source
       ? extractAssistantFragment(netlist.data.source, assistantInstances)
@@ -285,6 +296,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
   const goToLine = useCallback((line: number) => {
     setSelectedLine(line);
     viewerRef.current?.goToLine(line);
+    editorRef.current?.goToLine(line);
   }, []);
 
   // Click a device instance → navigate to die viewer and frame it
@@ -398,6 +410,17 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 </span>
               </span>
             )}
+            {manualNetlist !== null && (
+              <button
+                type="button"
+                className="chip"
+                onClick={() => setManualNetlist(null)}
+                title="Discard your edits and go back to the generated netlist"
+                style={{ color: "var(--accent)", fontWeight: 600 }}
+              >
+                ✎ tentative netlist · revert
+              </button>
+            )}
             {/* View toggle: Code / Graph / Schematic */}
             <div className="row" style={{ gap: 2, background: "var(--l1)", borderRadius: 4, padding: 2 }}>
               <button
@@ -437,6 +460,23 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
                 LVS
               </button>
             </div>
+            {/* Edit toggle — turns the Code tab into an editable sketch that
+                drives the Schematic view (see `manualSource`). */}
+            {rightView === "code" && (
+              <button
+                type="button"
+                className={"btn sm" + (codeEditing ? " on" : "")}
+                onClick={() => setCodeEditing((v) => !v)}
+                style={{ fontSize: 10, fontWeight: 600 }}
+                title={
+                  codeEditing
+                    ? "Stop editing — back to read-only view"
+                    : "Edit the netlist text to sketch a tentative schematic"
+                }
+              >
+                {codeEditing ? "✓ editing" : "✎ edit"}
+              </button>
+            )}
             {/* Hierarchical toggle (only in code view — schematic uses it by default) */}
             {rightView === "code" && (
               <label
@@ -667,6 +707,7 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               selectedRegion={selectedRegion}
               onSelectRegion={setSelectedRegion}
               selectedDeviceNames={assistantInstances}
+              manualSource={manualNetlist}
             />
           ) : rightView === "graph" && annotations && netlist.data ? (
             <NetGraphView
@@ -681,13 +722,22 @@ function AnalogNetlist({ dieId }: { dieId: string }) {
               }}
             />
           ) : netlist.data ? (
-            <CodeViewer
-              ref={viewerRef}
-              source={assistantFragment ?? netlist.data.source}
-              markers={[]}
-              selectedLine={selectedLine ?? undefined}
-              onSelectLine={setSelectedLine}
-            />
+            codeEditing ? (
+              <EditableCodeViewer
+                ref={editorRef}
+                value={editorSource}
+                onChange={setManualNetlist}
+                placeholder="Type device lines (M1 d g s b nmos l=... w=..., R1 a b 1k, ...) — the Schematic tab will render this text."
+              />
+            ) : (
+              <CodeViewer
+                ref={viewerRef}
+                source={assistantFragment ?? editorSource}
+                markers={[]}
+                selectedLine={selectedLine ?? undefined}
+                onSelectLine={setSelectedLine}
+              />
+            )
           ) : (
             <ViewerPlaceholder
               loading={netlist.loading}
