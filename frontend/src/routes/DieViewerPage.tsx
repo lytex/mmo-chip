@@ -858,6 +858,15 @@ function DieViewer({ dieId }: { dieId: string }) {
     annotationLayer.setVisibleKinds(new Set(visible));
   }, [annotationLayer, hiddenKinds]);
 
+  // Individually-hidden nets — layered on top of the "net" kind's
+  // all-or-nothing toggle above.
+  const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
+  useEffect(() => {
+    if (!annotationLayer) return;
+    const ids = Object.keys(hiddenNetIds).filter((id) => hiddenNetIds[id]);
+    annotationLayer.setHiddenIds(ids.length ? new Set(ids) : null);
+  }, [annotationLayer, hiddenNetIds]);
+
   // Push selection changes into the annotation layer so its draw highlights.
   // ML vias get the same set — the layer filters out non-`ml-via:` ids itself.
   const selectedIds = useDieViewerStore((s) => s.selectedIds);

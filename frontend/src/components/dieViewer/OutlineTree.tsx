@@ -89,6 +89,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const globalNetColor = usePreferences((s) => s.netColor);
   const setNetColorOverride = usePreferences((s) => s.setNetColorOverride);
   const setNetColorsForIds = usePreferences((s) => s.setNetColorsForIds);
+  const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
+  const setNetHidden = usePreferences((s) => s.setNetHidden);
+  const resetHiddenNets = usePreferences((s) => s.resetHiddenNets);
 
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
@@ -341,7 +344,17 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             <NetSettingsButton />
           </>
         }
-        visibility={visibilityFor("net")}
+        visibility={{
+          ...visibilityFor("net"),
+          // The section eye stays all-or-nothing (hides/shows every net at
+          // once), but each click also resets per-net overrides — so hiding
+          // clears the slate, and showing again reveals every net, not just
+          // whichever ones weren't individually hidden before.
+          onToggle: () => {
+            resetHiddenNets();
+            toggleKindVisibility("net");
+          }
+        }}
         onToggleExpand={() => toggleSection("net")}
         onSelect={() => toggleSection("net")}
         onDoubleClick={() => focus(netIdsAll)}
@@ -350,6 +363,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredNets.map((net) => {
           const id = `net:${net.id}`;
           const netColor = netColors[id] ?? globalNetColor;
+          const netVisible = hiddenNetIds[id] !== true;
           return (
             <TreeRow
               key={id}
@@ -363,6 +377,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                   onPick={(c) => setNetColorOverride(id, c)}
                 />
               }
+              visibility={{
+                visible: netVisible,
+                onToggle: () => setNetHidden(id, netVisible)
+              }}
               selected={selectedIds.has(id)}
               onSelect={(e) =>
                 select([id], e.shiftKey || e.metaKey || e.ctrlKey ? "toggle" : "replace")

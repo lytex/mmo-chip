@@ -53,6 +53,12 @@ interface PreferencesState {
    *  instead of by net. Toggle lets the user flip between the two views
    *  without re-picking colors. Default true (custom colors visible). */
   customNetColorsEnabled: boolean;
+  /** Per-net hidden flag, keyed by `net:<netId>` (same key shape as
+   *  `netColors`). Absent = visible. This is independent of `hiddenKinds`'s
+   *  "net" entry, which hides/shows every net at once — the "Nets" section
+   *  eye toggles that AND resets this map, so the two controls compose into
+   *  a coherent all-or-nothing / per-net visibility model. */
+  hiddenNetIds: Record<string, boolean>;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
@@ -223,6 +229,12 @@ interface PreferencesActions {
   /** Override color for several nets at once (multi-select bulk assign).
    *  null = clear all of them back to the global/layer default. */
   setNetColorsForIds: (netIds: string[], color: string | null) => void;
+  /** Show/hide one net (keyed by `net:<netId>`), independent of the others. */
+  setNetHidden: (netId: string, hidden: boolean) => void;
+  /** Clear all individual net hidden overrides (back to "all visible"). Used
+   *  by the "Nets" section eye so each all-or-nothing toggle starts from a
+   *  clean slate. */
+  resetHiddenNets: () => void;
   /** Toggle whether per-net color overrides render on the canvas (see
    *  `customNetColorsEnabled`). */
   setCustomNetColorsEnabled: (enabled: boolean) => void;
@@ -332,6 +344,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netWidth: NET_DEFAULT_WIDTH,
         netColor: NET_COLOR,
         netColors: {},
+        hiddenNetIds: {},
         customNetColorsEnabled: true,
         cellColor: CELL_COLOR,
         cellShowShapes: true,
@@ -450,6 +463,21 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             }
             return changed ? { netColors: next } : state;
           }),
+        setNetHidden: (netId, hidden) =>
+          set((state) => {
+            if (!hidden) {
+              if (!(netId in state.hiddenNetIds)) return state;
+              const { [netId]: _, ...rest } = state.hiddenNetIds;
+              return { hiddenNetIds: rest };
+            }
+            return { hiddenNetIds: { ...state.hiddenNetIds, [netId]: true } };
+          }),
+        resetHiddenNets: () =>
+          set((state) =>
+            Object.keys(state.hiddenNetIds).length === 0
+              ? state
+              : { hiddenNetIds: {} }
+          ),
         setCustomNetColorsEnabled: (enabled) =>
           set({ customNetColorsEnabled: enabled }),
         setCellColor: (color) => set({ cellColor: color }),
@@ -644,6 +672,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reLayerHidden: state.reLayerHidden,
           reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
+          hiddenNetIds: state.hiddenNetIds,
           customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
@@ -697,6 +726,11 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 /** Select the effective color for a net: override if set, else global netColor. */
 export function selectNetColor(netId: string) {
   return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
+}
+
+/** Helper selector: is this net (keyed by `net:<netId>`) currently visible? */
+export function selectNetVisible(netId: string) {
+  return (state: PreferencesState) => state.hiddenNetIds[netId] !== true;
 }
 
 /** Helper selector: is this annotation kind currently visible on the canvas? */
