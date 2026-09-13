@@ -92,6 +92,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
   const setNetHidden = usePreferences((s) => s.setNetHidden);
   const resetHiddenNets = usePreferences((s) => s.resetHiddenNets);
+  const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
+  const setCellTypeHidden = usePreferences((s) => s.setCellTypeHidden);
+  const resetHiddenCellTypes = usePreferences((s) => s.resetHiddenCellTypes);
 
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
@@ -398,7 +401,17 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         label="Cells"
         meta={q ? `${filteredCellsByType.reduce((s, g) => s + g.cells.length, 0)}/${annotations.cells.length}` : annotations.cells.length}
         controls={<CellSettingsButton />}
-        visibility={visibilityFor("cell")}
+        visibility={{
+          ...visibilityFor("cell"),
+          // Same all-or-nothing / per-item split as the Nets section: the
+          // section eye stays all-or-nothing, but each click also resets
+          // per-cell-type overrides so hiding clears the slate and showing
+          // again reveals every cell type.
+          onToggle: () => {
+            resetHiddenCellTypes();
+            toggleKindVisibility("cell");
+          }
+        }}
         onToggleExpand={() => toggleSection("cell")}
         onSelect={() => toggleSection("cell")}
         onDoubleClick={() => focus(cellIdsAll)}
@@ -407,6 +420,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredCellsByType.map((group) => {
           const groupKey = `cellType:${group.cellType.id}`;
           const open = expandedGroups.includes(groupKey);
+          const cellTypeVisible = hiddenCellTypeIds[group.cellType.id] !== true;
           return (
             <div key={groupKey}>
               <TreeRow
@@ -414,6 +428,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 expand={open ? "open" : "closed"}
                 label={group.cellType.name || group.cellType.id}
                 meta={group.cells.length}
+                visibility={{
+                  visible: cellTypeVisible,
+                  onToggle: () => setCellTypeHidden(group.cellType.id, cellTypeVisible)
+                }}
                 selected={selectedIds.has(groupKey)}
                 onToggleExpand={() => toggleGroup(groupKey)}
                 onSelect={() => select([groupKey])}

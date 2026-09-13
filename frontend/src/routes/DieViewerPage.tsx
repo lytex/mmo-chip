@@ -858,14 +858,34 @@ function DieViewer({ dieId }: { dieId: string }) {
     annotationLayer.setVisibleKinds(new Set(visible));
   }, [annotationLayer, hiddenKinds]);
 
-  // Individually-hidden nets — layered on top of the "net" kind's
-  // all-or-nothing toggle above.
+  // Individually-hidden nets and cell types — layered on top of the "net"/
+  // "cell" kinds' all-or-nothing toggles above. Cell types aren't their own
+  // annotation (only individual cells are), so a hidden cell type expands to
+  // every cell id sharing that cellTypeId.
   const hiddenNetIds = usePreferences((s) => s.hiddenNetIds);
+  const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
+  const cellIdsByType = useMemo(() => {
+    const m = new Map<string, string[]>();
+    for (const c of annotations?.cells ?? []) {
+      const list = m.get(c.cellTypeId);
+      if (list) list.push(`cell:${c.id}`);
+      else m.set(c.cellTypeId, [`cell:${c.id}`]);
+    }
+    return m;
+  }, [annotations]);
   useEffect(() => {
     if (!annotationLayer) return;
-    const ids = Object.keys(hiddenNetIds).filter((id) => hiddenNetIds[id]);
+    const ids: string[] = [];
+    for (const id of Object.keys(hiddenNetIds)) {
+      if (hiddenNetIds[id]) ids.push(id);
+    }
+    for (const cellTypeId of Object.keys(hiddenCellTypeIds)) {
+      if (!hiddenCellTypeIds[cellTypeId]) continue;
+      const cellIds = cellIdsByType.get(cellTypeId);
+      if (cellIds) ids.push(...cellIds);
+    }
     annotationLayer.setHiddenIds(ids.length ? new Set(ids) : null);
-  }, [annotationLayer, hiddenNetIds]);
+  }, [annotationLayer, hiddenNetIds, hiddenCellTypeIds, cellIdsByType]);
 
   // Push selection changes into the annotation layer so its draw highlights.
   // ML vias get the same set — the layer filters out non-`ml-via:` ids itself.

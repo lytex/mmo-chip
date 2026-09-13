@@ -59,6 +59,12 @@ interface PreferencesState {
    *  eye toggles that AND resets this map, so the two controls compose into
    *  a coherent all-or-nothing / per-net visibility model. */
   hiddenNetIds: Record<string, boolean>;
+  /** Per-cell-type hidden flag, keyed by `cellTypeId` (the same id used in
+   *  `Cell.cellTypeId`). Absent = visible. Mirrors `hiddenNetIds`: the
+   *  "Cells" section eye stays all-or-nothing (hides/shows the whole "cell"
+   *  kind) and resets this map on every click, while each cell-type group
+   *  row gets its own eye for hiding just that type's instances. */
+  hiddenCellTypeIds: Record<string, boolean>;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
@@ -235,6 +241,10 @@ interface PreferencesActions {
    *  by the "Nets" section eye so each all-or-nothing toggle starts from a
    *  clean slate. */
   resetHiddenNets: () => void;
+  /** Show/hide one cell type (keyed by `cellTypeId`), independent of the others. */
+  setCellTypeHidden: (cellTypeId: string, hidden: boolean) => void;
+  /** Clear all individual cell-type hidden overrides (back to "all visible"). */
+  resetHiddenCellTypes: () => void;
   /** Toggle whether per-net color overrides render on the canvas (see
    *  `customNetColorsEnabled`). */
   setCustomNetColorsEnabled: (enabled: boolean) => void;
@@ -345,6 +355,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netColor: NET_COLOR,
         netColors: {},
         hiddenNetIds: {},
+        hiddenCellTypeIds: {},
         customNetColorsEnabled: true,
         cellColor: CELL_COLOR,
         cellShowShapes: true,
@@ -477,6 +488,21 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             Object.keys(state.hiddenNetIds).length === 0
               ? state
               : { hiddenNetIds: {} }
+          ),
+        setCellTypeHidden: (cellTypeId, hidden) =>
+          set((state) => {
+            if (!hidden) {
+              if (!(cellTypeId in state.hiddenCellTypeIds)) return state;
+              const { [cellTypeId]: _, ...rest } = state.hiddenCellTypeIds;
+              return { hiddenCellTypeIds: rest };
+            }
+            return { hiddenCellTypeIds: { ...state.hiddenCellTypeIds, [cellTypeId]: true } };
+          }),
+        resetHiddenCellTypes: () =>
+          set((state) =>
+            Object.keys(state.hiddenCellTypeIds).length === 0
+              ? state
+              : { hiddenCellTypeIds: {} }
           ),
         setCustomNetColorsEnabled: (enabled) =>
           set({ customNetColorsEnabled: enabled }),
@@ -673,6 +699,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           reLayerSelectable: state.reLayerSelectable,
           netColors: state.netColors,
           hiddenNetIds: state.hiddenNetIds,
+          hiddenCellTypeIds: state.hiddenCellTypeIds,
           customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
@@ -731,6 +758,11 @@ export function selectNetColor(netId: string) {
 /** Helper selector: is this net (keyed by `net:<netId>`) currently visible? */
 export function selectNetVisible(netId: string) {
   return (state: PreferencesState) => state.hiddenNetIds[netId] !== true;
+}
+
+/** Helper selector: is this cell type currently visible? */
+export function selectCellTypeVisible(cellTypeId: string) {
+  return (state: PreferencesState) => state.hiddenCellTypeIds[cellTypeId] !== true;
 }
 
 /** Helper selector: is this annotation kind currently visible on the canvas? */
