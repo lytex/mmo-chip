@@ -529,7 +529,7 @@ export function buildRoiRect(roi: ROIRectangle): Annotation {
   };
 }
 
-function buildPin(pin: IOPin, getNamesVisible: () => boolean): Annotation {
+export function buildPin(pin: IOPin, getNamesVisible: () => boolean): Annotation {
   const half = 6; // half-size in source pixels for the bbox
   return {
     id: `pin:${pin.id}`,

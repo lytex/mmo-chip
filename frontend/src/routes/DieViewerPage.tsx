@@ -35,6 +35,7 @@ import { RulerOverlay, type RulerDraft } from "../components/dieViewer/RulerOver
 import {
   buildCellAnnotation,
   buildNetAnnotation,
+  buildPin,
   populateAnnotationLayer
 } from "../renderer/annotations/dieAnnotations";
 import { OutlineTree } from "../components/dieViewer/OutlineTree";
@@ -561,6 +562,10 @@ function DieViewer({ dieId }: { dieId: string }) {
   const getCellC = useCallback(() => usePreferences.getState().cellColor, []);
   const getCellShapes = useCallback(
     () => usePreferences.getState().cellShowShapes,
+    []
+  );
+  const getPinNamesVisible = useCallback(
+    () => usePreferences.getState().pinNamesVisible,
     []
   );
 
@@ -2204,6 +2209,61 @@ function DieViewer({ dieId }: { dieId: string }) {
           return handler;
         }
 
+        // Dragging an I/O pin repositions it — same live-update / commit-on-
+        // up scheme as the cell drag above.
+        if (hit.partId.startsWith("pin:")) {
+          const pinId = hit.partId.slice(4);
+          const original = annotationsRef.current?.pins?.find((p) => p.id === pinId) ?? null;
+          if (original) {
+            // Shift locks the move to the dominant axis (re-evaluated live, so
+            // tapping Shift mid-drag snaps it straight without restarting).
+            const movePin = (
+              worldPoint: { x: number; y: number },
+              startWorld: { x: number; y: number },
+              shift: boolean,
+              round: boolean
+            ) => {
+              let dx = worldPoint.x - startWorld.x;
+              let dy = worldPoint.y - startWorld.y;
+              if (shift) {
+                if (Math.abs(dx) >= Math.abs(dy)) dy = 0;
+                else dx = 0;
+              }
+              const x = round ? Math.round(original.x + dx) : original.x + dx;
+              const y = round ? Math.round(original.y + dy) : original.y + dy;
+              return { ...original, x, y };
+            };
+            const handler: DragHandler = {
+              onDragStart: () => {
+                useDieViewerStore.getState().select([hit.partId], "replace");
+              },
+              onDragMove: ({ worldPoint, startWorld, modifiers }) => {
+                annotationLayer.update(
+                  buildPin(
+                    movePin(worldPoint, startWorld, modifiers.shift, false),
+                    getPinNamesVisible
+                  )
+                );
+              },
+              onPointerUp: ({ dragged, worldPoint, startWorld, modifiers }) => {
+                if (!dragged) {
+                  selectFromHit(hit, modifiers.shift);
+                  return;
+                }
+                void dispatcher.dispatch({
+                  kind: "upsertPin",
+                  pin: movePin(worldPoint, startWorld, modifiers.shift, true),
+                  prevPin: original
+                });
+              },
+              onCancel: () => {
+                annotationLayer.update(buildPin(original, getPinNamesVisible));
+              }
+            };
+            return handler;
+          }
+        }
+
         // Editable ML shapes (via rectangle / polygon, ROI, ignore): grab a
         // corner/vertex to reshape or the body to move; live-preview, commit
         // one undoable upsert on release.
@@ -2415,7 +2475,8 @@ function DieViewer({ dieId }: { dieId: string }) {
       getNetW,
       getNetC,
       getCellC,
-      getCellShapes
+      getCellShapes,
+      getPinNamesVisible
     ]
   );
 
