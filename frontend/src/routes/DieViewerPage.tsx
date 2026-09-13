@@ -702,6 +702,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         return prefs.viaLayerColors[layer] ?? stack.vias.find(v => v.id === layer)?.color;
       },
       viaLabelVisible: () => usePreferences.getState().viaLabelsVisible,
+      pinNamesVisible: () => usePreferences.getState().pinNamesVisible,
       netNodeMatchesWidth: () =>
         usePreferences.getState().inspectorTab === "ml",
       wireLayerColor: (layer: string) =>
@@ -742,7 +743,7 @@ function DieViewer({ dieId }: { dieId: string }) {
   useEffect(() => {
     const unsubs = (
       ["netWidth", "netColor", "netColors", "customNetColorsEnabled", "cellColor", "cellShowShapes", "viaSize",
-       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible"] as const
+       "viaColor", "wireLayerColors", "viaLayerColors", "netNodeSize", "netNodeVisible", "pinNamesVisible"] as const
     ).map((key) =>
       usePreferences.subscribe(
         (s) => s[key],

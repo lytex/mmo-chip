@@ -123,6 +123,8 @@ export const Ic = {
       <path d="M9 8h5" />
     </>
   ),
+  /** Text-lines glyph, used for "toggle name labels" controls. */
+  tag: Icon(<path d="M3 5h10M3 8h7M3 11h10" />),
   mlIgnore: Icon(
     <>
       <rect x="3" y="3" width="10" height="10" rx="1" />

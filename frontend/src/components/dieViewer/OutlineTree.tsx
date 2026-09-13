@@ -95,6 +95,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
   const setCellTypeHidden = usePreferences((s) => s.setCellTypeHidden);
   const resetHiddenCellTypes = usePreferences((s) => s.resetHiddenCellTypes);
+  const pinNamesVisible = usePreferences((s) => s.pinNamesVisible);
+  const setPinNamesVisible = usePreferences((s) => s.setPinNamesVisible);
 
   const selectedIds = useDieViewerStore((s) => s.selectedIds);
   const select = useDieViewerStore((s) => s.select);
@@ -513,7 +515,40 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         expand={isOpen("pin") ? "open" : "closed"}
         label="I/O pins"
         meta={annotations.pins?.length ?? 0}
-        visibility={visibilityFor("pin")}
+        controls={
+          <button
+            type="button"
+            className="trow-eye"
+            aria-label={pinNamesVisible ? "hide pin names" : "show pin names"}
+            aria-pressed={!pinNamesVisible}
+            title="Toggle I/O pin name labels"
+            onClick={() => setPinNamesVisible(!pinNamesVisible)}
+            style={{
+              display: "inline-flex",
+              alignItems: "center",
+              justifyContent: "center",
+              background: "transparent",
+              border: 0,
+              padding: 0,
+              color: pinNamesVisible ? "var(--ink3)" : "var(--muted)",
+              cursor: "pointer"
+            }}
+          >
+            {Ic.tag}
+          </button>
+        }
+        visibility={{
+          ...visibilityFor("pin"),
+          // The section eye stays all-or-nothing (hides/shows every pin
+          // marker + name at once), but each click also resets the names
+          // toggle back to visible — so hiding is a clean slate, and showing
+          // again always brings names back too, regardless of what the names
+          // toggle was set to before.
+          onToggle: () => {
+            setPinNamesVisible(true);
+            toggleKindVisibility("pin");
+          }
+        }}
         onToggleExpand={() => toggleSection("pin")}
         onSelect={() => toggleSection("pin")}
         onDoubleClick={() => focus(pinIdsAll)}

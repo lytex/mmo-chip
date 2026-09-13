@@ -114,6 +114,10 @@ export interface PopulateOptions {
   /** Called at draw time: when sibling highlighting is active, non-sibling
    *  cells are dimmed so the group stands out. */
   siblingActive?: () => boolean;
+  /** Live getter: show the name+number label next to each I/O pin marker.
+   *  Default true (names always shown). Independent of the pin kind's
+   *  own all-or-nothing visibility (which hides the whole marker). */
+  pinNamesVisible?: () => boolean;
 }
 
 /**
@@ -195,7 +199,8 @@ export function populateAnnotationLayer(
   }
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
   for (const r of annotations.ignores ?? []) layer.add(buildIgnore(r));
-  for (const p of annotations.pins ?? []) layer.add(buildPin(p));
+  const getPinNamesVisible = options.pinNamesVisible ?? (() => true);
+  for (const p of annotations.pins ?? []) layer.add(buildPin(p, getPinNamesVisible));
 }
 
 // ── Cells ────────────────────────────────────────────────────────────
@@ -524,12 +529,7 @@ export function buildRoiRect(roi: ROIRectangle): Annotation {
   };
 }
 
-// Above this zoom (CSS px per world unit) the name+number label is drawn for
-// every pin; below it, only the selected pin shows its label (avoids clutter
-// when the whole die is in view).
-const PIN_LABEL_MIN_ZOOM = 0.12;
-
-function buildPin(pin: IOPin): Annotation {
+function buildPin(pin: IOPin, getNamesVisible: () => boolean): Annotation {
   const half = 6; // half-size in source pixels for the bbox
   return {
     id: `pin:${pin.id}`,
@@ -546,8 +546,9 @@ function buildPin(pin: IOPin): Annotation {
       ctx.fill();
       ctx.stroke();
 
-      // Label: pin name + number. Shown when zoomed in, or when selected.
-      if (!state.selected && bounds.zoom < PIN_LABEL_MIN_ZOOM) return;
+      // Label: pin name + number. Always shown (regardless of zoom/selection)
+      // unless the names toggle has hidden them.
+      if (!getNamesVisible()) return;
       const fontPx = 11 / bounds.zoom; // ~constant on-screen size
       ctx.font = `${fontPx}px ui-sans-serif, system-ui, sans-serif`;
       ctx.textAlign = "left";

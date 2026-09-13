@@ -162,6 +162,13 @@ interface PreferencesState {
   /** Show via type label (VIA12, VIA23, …) above each via annotation on the
    *  die viewer canvas. */
   viaLabelsVisible: boolean;
+  /** Show the name label next to each I/O pin marker on the die viewer
+   *  canvas. Independent of `hiddenKinds`'s "pin" entry, which hides/shows
+   *  the whole pin marker (+ its name) at once — the "I/O pins" section eye
+   *  toggles that AND resets this back to true, so re-showing pins always
+   *  brings their names back too, regardless of what this toggle was set to
+   *  before. Default true (names always shown). */
+  pinNamesVisible: boolean;
   /** Die viewer: show the analog devices overlay (extracted instances + highlights). */
   deviceOverlayOn: boolean;
   /** Die viewer: render net IDs next to terminals/wires instead of just net colors. */
@@ -256,6 +263,8 @@ interface PreferencesActions {
   setViaPlaceMode: (mode: "cursor" | "wire-end") => void;
   /** Toggle via type labels on the die viewer canvas. */
   setViaLabelsVisible: (visible: boolean) => void;
+  /** Toggle I/O pin name labels on the die viewer canvas. */
+  setPinNamesVisible: (visible: boolean) => void;
   /** Toggle analog devices overlay on the die viewer canvas. */
   setDeviceOverlayOn: (visible: boolean) => void;
   /** Toggle net ID overlay on the die viewer canvas. */
@@ -397,6 +406,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaPlaceMode: "wire-end",
         viaLayerColors: {},
         viaLabelsVisible: true,
+        pinNamesVisible: true,
         deviceOverlayOn: true,
         showTermNetIds: false,
         floorplanOverlayOn: true,
@@ -435,6 +445,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setAutoViaEnabled: (enabled) => set({ autoViaEnabled: enabled }),
         setViaPlaceMode: (mode) => set({ viaPlaceMode: mode }),
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
+        setPinNamesVisible: (visible) => set({ pinNamesVisible: visible }),
         setDeviceOverlayOn: (visible) => set({ deviceOverlayOn: visible }),
         setShowTermNetIds: (visible) => set({ showTermNetIds: visible }),
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
@@ -715,6 +726,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           autoViaEnabled: state.autoViaEnabled,
           viaPlaceMode: state.viaPlaceMode,
           viaLabelsVisible: state.viaLabelsVisible,
+          pinNamesVisible: state.pinNamesVisible,
           deviceOverlayOn: state.deviceOverlayOn,
           showTermNetIds: state.showTermNetIds,
           floorplanOverlayOn: state.floorplanOverlayOn,
