@@ -275,6 +275,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   const showRulerPx = useDieViewerStore((s) => s.showRulerPx);
   const showRulerUm = useDieViewerStore((s) => s.showRulerUm);
   const showRulerNm = useDieViewerStore((s) => s.showRulerNm);
+  const rulersHidden = usePreferences((s) => s.rulersHidden);
+  const rulerVisibilityOverrides = usePreferences((s) => s.rulerVisibilityOverrides);
+  const isRulerVisible = useCallback(
+    (rulerId: string) => rulerVisibilityOverrides[rulerId] ?? !rulersHidden,
+    [rulerVisibilityOverrides, rulersHidden]
+  );
+  const visibleRulers = useMemo(
+    () => (annotations?.rulers ?? []).filter((r) => isRulerVisible(r.id)),
+    [annotations?.rulers, isRulerVisible]
+  );
   useEffect(() => {
     const existing = new Set((annotations?.rulers ?? []).map((r) => r.id));
     setSelectedRulerIds((current) => {
@@ -1860,7 +1870,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       if (tool === "measure" || tool === "select") {
         const vp = viewportLive.get();
         const tolerance = vp ? 10 / vp.zoom : 10;
+        const rulerPrefs = usePreferences.getState();
         const hit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+          (rulerPrefs.rulerVisibilityOverrides[ruler.id] ?? !rulerPrefs.rulersHidden) &&
           distancePointToSegment(e.worldPoint, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= tolerance
         );
         if (hit) {
@@ -2945,7 +2957,9 @@ function DieViewer({ dieId }: { dieId: string }) {
       let hitCellId: string | undefined;
       let hitPartId: string | undefined;
       let hitRulerId: string | undefined;
+      const rulerHitPrefs = usePreferences.getState();
       const rulerHit = (annotationsRef.current?.rulers ?? []).find((ruler) =>
+        (rulerHitPrefs.rulerVisibilityOverrides[ruler.id] ?? !rulerHitPrefs.rulersHidden) &&
         distancePointToSegment(world, { x: ruler.x1, y: ruler.y1 }, { x: ruler.x2, y: ruler.y2 }) <= HIT_TOLERANCE_PX / vp.zoom
       );
       if (rulerHit) {
@@ -3460,7 +3474,7 @@ function DieViewer({ dieId }: { dieId: string }) {
             />
           )}
           <RulerOverlay
-            rulers={annotations?.rulers ?? []}
+            rulers={visibleRulers}
             draftStore={rulerDraftLive}
             pendingStore={rulerPendingLive}
             viewportStore={viewportLive}

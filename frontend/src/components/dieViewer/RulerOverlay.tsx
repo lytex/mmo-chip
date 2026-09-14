@@ -123,7 +123,6 @@ export function RulerOverlay({
       if (!ctx) return;
       ctx.clearRect(0, 0, w, h);
       for (const ruler of rulers) {
-        if (vp.zoom < 0.2 && !selectedIds.has(ruler.id)) continue;
         drawRuler(
           ctx,
           ruler,

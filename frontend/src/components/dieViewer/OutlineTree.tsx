@@ -59,6 +59,9 @@ const ML_RESULTS_KEY = "ml-results";
 /** Session-group key for the "Guides" section (not an AnnotationKind — guides
  *  render via their own overlay, not the rbush layer). */
 const GUIDES_KEY = "guides";
+/** Session-group key for the "Rulers" section (not an AnnotationKind —
+ *  rulers render via their own overlay, not the rbush layer). */
+const RULERS_KEY = "rulers";
 /** Session-group key for the "Base Images" section (die background images;
  *  not an AnnotationKind — they render via the image layer, not rbush). */
 const BASE_IMAGES_KEY = "base-images";
@@ -76,6 +79,11 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const setGuidesHidden = usePreferences((s) => s.setGuidesHidden);
   const guidesLocked = usePreferences((s) => s.guidesLocked);
   const setGuidesLocked = usePreferences((s) => s.setGuidesLocked);
+
+  const rulersHidden = usePreferences((s) => s.rulersHidden);
+  const toggleRulersVisibility = usePreferences((s) => s.toggleRulersVisibility);
+  const rulerVisibilityOverrides = usePreferences((s) => s.rulerVisibilityOverrides);
+  const setRulerVisible = usePreferences((s) => s.setRulerVisible);
 
   const baseImageHidden = usePreferences((s) => s.baseImageHidden);
   const setBaseImageHidden = usePreferences((s) => s.setBaseImageHidden);
@@ -247,6 +255,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlOpen = expandedGroups.includes(ML_REGIONS_KEY);
   const mlResultsOpen = expandedGroups.includes(ML_RESULTS_KEY);
   const guidesOpen = expandedGroups.includes(GUIDES_KEY);
+  const rulersOpen = expandedGroups.includes(RULERS_KEY);
   const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
   const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
@@ -710,6 +719,42 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
               dimmed={guidesLocked}
               selected={selectedIds.has(id)}
               onSelect={guidesLocked ? undefined : () => select([id])}
+            />
+          );
+        })}
+
+      <TreeSep />
+
+      {/* Rulers ------------------------------------------------------------ */}
+      <TreeRow
+        expand={rulersOpen ? "open" : "closed"}
+        label="Rulers"
+        meta={annotations.rulers?.length ?? 0}
+        visibility={{
+          visible: !rulersHidden,
+          // All-or-nothing: every click flips the global toggle AND clears
+          // per-ruler overrides, so hiding is a clean slate and showing
+          // again reveals every ruler — re-showing just one (below) doesn't
+          // survive the next global click either way.
+          onToggle: toggleRulersVisibility
+        }}
+        onToggleExpand={() => toggleGroup(RULERS_KEY)}
+        onSelect={() => toggleGroup(RULERS_KEY)}
+      />
+      {rulersOpen &&
+        annotations.rulers?.map((ruler, idx) => {
+          const visible = rulerVisibilityOverrides[ruler.id] ?? !rulersHidden;
+          return (
+            <TreeRow
+              key={`ruler:${ruler.id}`}
+              depth={1}
+              icon={Ic.ruler}
+              label={ruler.name || `ruler ${idx + 1}`}
+              meta={`${Math.round(ruler.lengthPx).toLocaleString()} px`}
+              visibility={{
+                visible,
+                onToggle: () => setRulerVisible(ruler.id, !visible)
+              }}
             />
           );
         })}

@@ -65,6 +65,20 @@ interface PreferencesState {
    *  kind) and resets this map on every click, while each cell-type group
    *  row gets its own eye for hiding just that type's instances. */
   hiddenCellTypeIds: Record<string, boolean>;
+  /** Global ruler-layer visibility. Unlike `hiddenKinds` (nets/cells), a
+   *  ruler isn't an AnnotationKind — it renders via its own overlay — so this
+   *  is a plain boolean rather than a kind-array entry. Default false (all
+   *  rulers visible). */
+  rulersHidden: boolean;
+  /** Per-ruler visibility override, keyed by ruler id. Absent = follow
+   *  `rulersHidden`. Unlike `hiddenNetIds` (which only ever marks something
+   *  hidden, since the "net" kind is never solo'd back on once globally
+   *  hidden), this stores the ruler's *explicit* visible/hidden state so a
+   *  single ruler can be re-shown even while the rest of the layer is
+   *  globally off: `toggleRulersVisibility` flips `rulersHidden` AND clears
+   *  this map, so every global click is a clean slate, while a per-ruler
+   *  click only ever affects that one ruler. */
+  rulerVisibilityOverrides: Record<string, boolean>;
   /** Cell-grid guides hidden on the canvas. */
   guidesHidden: boolean;
   /** Guides locked — not selectable / movable (still visible). */
@@ -259,6 +273,13 @@ interface PreferencesActions {
   setCellTypeHidden: (cellTypeId: string, hidden: boolean) => void;
   /** Clear all individual cell-type hidden overrides (back to "all visible"). */
   resetHiddenCellTypes: () => void;
+  /** Flip the global ruler-layer visibility and clear every per-ruler
+   *  override, so each click is an unambiguous "hide everything" /
+   *  "show everything". */
+  toggleRulersVisibility: () => void;
+  /** Show/hide one ruler (by id), independent of the others and of the
+   *  global toggle. */
+  setRulerVisible: (rulerId: string, visible: boolean) => void;
   /** Toggle whether per-net color overrides render on the canvas (see
    *  `customNetColorsEnabled`). */
   setCustomNetColorsEnabled: (enabled: boolean) => void;
@@ -374,6 +395,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netColors: {},
         hiddenNetIds: {},
         hiddenCellTypeIds: {},
+        rulersHidden: false,
+        rulerVisibilityOverrides: {},
         customNetColorsEnabled: true,
         cellColor: CELL_COLOR,
         cellShowShapes: true,
@@ -528,6 +551,23 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
               ? state
               : { hiddenCellTypeIds: {} }
           ),
+        toggleRulersVisibility: () =>
+          set((state) => ({
+            rulersHidden: !state.rulersHidden,
+            rulerVisibilityOverrides: {}
+          })),
+        setRulerVisible: (rulerId, visible) =>
+          set((state) => {
+            const isDefault = visible === !state.rulersHidden;
+            if (isDefault) {
+              if (!(rulerId in state.rulerVisibilityOverrides)) return state;
+              const { [rulerId]: _, ...rest } = state.rulerVisibilityOverrides;
+              return { rulerVisibilityOverrides: rest };
+            }
+            return {
+              rulerVisibilityOverrides: { ...state.rulerVisibilityOverrides, [rulerId]: visible }
+            };
+          }),
         setCustomNetColorsEnabled: (enabled) =>
           set({ customNetColorsEnabled: enabled }),
         setCellColor: (color) => set({ cellColor: color }),
@@ -726,6 +766,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netColors: state.netColors,
           hiddenNetIds: state.hiddenNetIds,
           hiddenCellTypeIds: state.hiddenCellTypeIds,
+          rulersHidden: state.rulersHidden,
+          rulerVisibilityOverrides: state.rulerVisibilityOverrides,
           customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
           snapToVias: state.snapToVias,
@@ -792,6 +834,13 @@ export function selectNetVisible(netId: string) {
 /** Helper selector: is this cell type currently visible? */
 export function selectCellTypeVisible(cellTypeId: string) {
   return (state: PreferencesState) => state.hiddenCellTypeIds[cellTypeId] !== true;
+}
+
+/** Helper selector: is this ruler currently visible? Explicit per-ruler
+ *  override wins; otherwise falls back to the global `rulersHidden` toggle. */
+export function selectRulerVisible(rulerId: string) {
+  return (state: PreferencesState) =>
+    state.rulerVisibilityOverrides[rulerId] ?? !state.rulersHidden;
 }
 
 /** Helper selector: is this annotation kind currently visible on the canvas? */
