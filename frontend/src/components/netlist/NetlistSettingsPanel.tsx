@@ -39,8 +39,6 @@ type Props = {
   setEdgeEdge: (v: number | undefined) => void;
   edgeNode: number | undefined;
   setEdgeNode: (v: number | undefined) => void;
-  mergeEdges: boolean;
-  setMergeEdges: (v: boolean) => void;
   favorStraightEdges: boolean;
   setFavorStraightEdges: (v: boolean) => void;
   showIoPins: boolean;
@@ -49,6 +47,8 @@ type Props = {
   setShowHierarchy: (v: boolean) => void;
   showLegacyStatic: boolean;
   setShowLegacyStatic: (v: boolean) => void;
+  dragMode: "surgical" | "full";
+  setDragMode: (v: "surgical" | "full") => void;
 };
 
 const labelStyle: React.CSSProperties = {
@@ -60,6 +60,15 @@ const inputStyle: React.CSSProperties = {
   background: "var(--l1)", border: "1px solid var(--l2)",
   borderRadius: 4, color: "#fff", outline: "none",
   boxSizing: "border-box",
+};
+
+const btnBase: React.CSSProperties = {
+  flex: 1, padding: "5px 8px", fontSize: 11, cursor: "pointer",
+  background: "var(--l1)", border: "1px solid var(--l2)",
+  borderRadius: 4, color: "var(--ink2)", outline: "none", textAlign: "center",
+};
+const btnActive: React.CSSProperties = {
+  background: "var(--accent)", borderColor: "var(--accent)", color: "#fff",
 };
 
 function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
@@ -139,11 +148,11 @@ export function NetlistSettingsPanel({
   betweenLayers, setBetweenLayers,
   edgeEdge, setEdgeEdge,
   edgeNode, setEdgeNode,
-  mergeEdges, setMergeEdges,
   favorStraightEdges, setFavorStraightEdges,
   showIoPins, setShowIoPins,
   showHierarchy, setShowHierarchy,
   showLegacyStatic, setShowLegacyStatic,
+  dragMode, setDragMode,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -247,15 +256,33 @@ export function NetlistSettingsPanel({
               hint="elk.spacing.edgeNode — default 12. Higher keeps wires further from symbols."
             />
             <Toggle
-              label="Merge parallel edges"
-              checked={mergeEdges}
-              onChange={setMergeEdges}
-            />
-            <Toggle
               label="Prefer straight edges"
               checked={favorStraightEdges}
               onChange={setFavorStraightEdges}
             />
+            <div style={{ marginBottom: 10 }}>
+              <div style={labelStyle}>Drag re-route <span style={{ color: "var(--ink4)", fontWeight: 400 }}>(Shift = full)</span></div>
+              <div style={{ display: "flex", gap: 4 }}>
+                <button
+                  type="button"
+                  onClick={() => setDragMode("surgical")}
+                  style={{
+                    ...btnBase, ...(dragMode === "surgical" ? btnActive : {}),
+                  }}
+                >
+                  Surgical
+                </button>
+                <button
+                  type="button"
+                  onClick={() => setDragMode("full")}
+                  style={{
+                    ...btnBase, ...(dragMode === "full" ? btnActive : {}),
+                  }}
+                >
+                  Full
+                </button>
+              </div>
+            </div>
             <Toggle
               label="Show die I/O pins"
               checked={showIoPins}

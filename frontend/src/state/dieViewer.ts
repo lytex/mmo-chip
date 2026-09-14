@@ -1,6 +1,7 @@
 import { create } from "zustand";
 import type { DieMLConfig } from "shared";
 import type { AnnotationAction } from "../api/actions";
+import type { WireClipboard } from "../lib/wireClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
  *  traces/vias size from `mlConfig` instead of display preferences. */
@@ -105,7 +106,8 @@ interface DieViewerState {
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
   /** Copied cell data for paste (cellTypeId + orientation, no position). */
-  clipboardCells: { cellTypeId: string; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[];
+  clipboardCells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[];
+  clipboardWires: WireClipboard | null;
 }
 
 interface DieViewerActions {
@@ -131,7 +133,9 @@ interface DieViewerActions {
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
   /** Copy selected cell instance(s) to clipboard. */
-  copyCells: (cells: { cellTypeId: string; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[]) => void;
+  copyCells: (cells: { cellTypeId: string; offsetX: number; offsetY: number; flippedV?: boolean; flippedH?: boolean; rotation?: 0 | 90 | 180 | 270 }[]) => void;
+  setWireClipboard: (clipboard: WireClipboard) => void;
+  clearWireClipboard: () => void;
   /** Clear cell clipboard. */
   clearCellClipboard: () => void;
   /** Wipe transient state — called when navigating to a different die. */
@@ -157,7 +161,8 @@ const INITIAL_STATE: DieViewerState = {
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
-  clipboardCells: []
+  clipboardCells: [],
+  clipboardWires: null
 };
 
 /**
@@ -243,6 +248,8 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   },
 
   copyCells: (cells) => set({ clipboardCells: cells }),
+  setWireClipboard: (clipboard) => set({ clipboardWires: clipboard }),
+  clearWireClipboard: () => set({ clipboardWires: null }),
   clearCellClipboard: () => set({ clipboardCells: [] }),
 
   reset: () => set(INITIAL_STATE)

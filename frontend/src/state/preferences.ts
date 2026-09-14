@@ -223,7 +223,6 @@ interface PreferencesState {
   netlistBetweenLayers: number | undefined;
   netlistEdgeEdge: number | undefined;
   netlistEdgeNode: number | undefined;
-  netlistMergeEdges: boolean;
   netlistFavorStraightEdges: boolean;
   /** Show die-level I/O pin symbols (inputExt) in the interactive schematic. */
   netlistShowIoPins: boolean;
@@ -232,6 +231,14 @@ interface PreferencesState {
   /** Show the legacy static netlist2svg renderer (toggle, download, functional).
    *  Off by default — the interactive canvas is the primary engine. */
   netlistShowLegacyStatic: boolean;
+  /** Drag re-route mode: "surgical" re-routes only edges touching the
+   *  moved device (default); "full" re-routes the whole net (old behavior).
+   *  Shift during drag overrides to full for that gesture. */
+  netlistDragMode: "surgical" | "full";
+  /** ngspice execution mode: "wasm" (in-browser) or "server" (backend API). */
+  ngspiceMode: "wasm" | "server";
+  /** Path to ngspice binary (only used in server mode). */
+  ngspicePath: string;
 }
 
 interface PreferencesActions {
@@ -347,11 +354,13 @@ interface PreferencesActions {
   setNetlistBetweenLayers: (v: number | undefined) => void;
   setNetlistEdgeEdge: (v: number | undefined) => void;
   setNetlistEdgeNode: (v: number | undefined) => void;
-  setNetlistMergeEdges: (v: boolean) => void;
   setNetlistFavorStraightEdges: (v: boolean) => void;
   setNetlistShowIoPins: (v: boolean) => void;
   setNetlistShowHierarchy: (v: boolean) => void;
   setNetlistShowLegacyStatic: (v: boolean) => void;
+  setNetlistDragMode: (v: "surgical" | "full") => void;
+  setNgspiceMode: (v: "wasm" | "server") => void;
+  setNgspicePath: (v: string) => void;
 }
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
@@ -430,11 +439,15 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netlistBetweenLayers: undefined,
         netlistEdgeEdge: undefined,
         netlistEdgeNode: undefined,
-        netlistMergeEdges: false,
         netlistFavorStraightEdges: false,
         netlistShowIoPins: true,
         netlistShowHierarchy: true,
         netlistShowLegacyStatic: false,
+        netlistDragMode: "surgical",
+        ngspiceMode: "wasm",
+        ngspicePath: typeof navigator !== "undefined" && navigator.platform?.includes("Win")
+          ? "C:\\Program Files\\Spice64\\bin\\ngspice.exe"
+          : "ngspice",
 
         setNetWidth: (width) => set({ netWidth: width }),
         setNetColor: (color) => set({ netColor: color }),
@@ -672,11 +685,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setNetlistBetweenLayers: (v) => set({ netlistBetweenLayers: v }),
         setNetlistEdgeEdge: (v) => set({ netlistEdgeEdge: v }),
         setNetlistEdgeNode: (v) => set({ netlistEdgeNode: v }),
-        setNetlistMergeEdges: (v) => set({ netlistMergeEdges: v }),
         setNetlistFavorStraightEdges: (v) => set({ netlistFavorStraightEdges: v }),
         setNetlistShowIoPins: (v) => set({ netlistShowIoPins: v }),
         setNetlistShowHierarchy: (v) => set({ netlistShowHierarchy: v }),
         setNetlistShowLegacyStatic: (v) => set({ netlistShowLegacyStatic: v }),
+        setNetlistDragMode: (v) => set({ netlistDragMode: v }),
+        setNgspiceMode: (v) => set({ ngspiceMode: v }),
+        setNgspicePath: (v) => set({ ngspicePath: v }),
       }),
       {
         name: "mmo-chip-preferences",
@@ -751,11 +766,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netlistBetweenLayers: state.netlistBetweenLayers,
           netlistEdgeEdge: state.netlistEdgeEdge,
           netlistEdgeNode: state.netlistEdgeNode,
-          netlistMergeEdges: state.netlistMergeEdges,
           netlistFavorStraightEdges: state.netlistFavorStraightEdges,
           netlistShowIoPins: state.netlistShowIoPins,
           netlistShowHierarchy: state.netlistShowHierarchy,
-          netlistShowLegacyStatic: state.netlistShowLegacyStatic
+          netlistShowLegacyStatic: state.netlistShowLegacyStatic,
+          netlistDragMode: state.netlistDragMode,
+          ngspiceMode: state.ngspiceMode,
+          ngspicePath: state.ngspicePath,
         })
       }
     )

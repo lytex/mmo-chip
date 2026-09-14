@@ -13,6 +13,10 @@ import {
   regionExternalNets,
   blockDevices,
   blockSize,
+  WireGrid,
+  type LocalRouteOptions,
+  type TracedEdge,
+  type WireData,
   type Obstacle,
   type HierarchyBlock,
 } from "./interactiveAnalogLayout";
@@ -53,21 +57,22 @@ describe("buildNetIndex", () => {
     const nets = new Map([[7, "VDD"]]);
     const powers = powerDevices(devices, nets, { vdd: "VDD", gnd: "GND" });
     expect(powers).toHaveLength(1);
-    expect(powers[0].instanceName).toBe("VDD");
+    expect(powers[0].instanceName).toBe("VDD:7");
     const idx = buildNetIndex(devices, {}, powers);
     expect(idx.get(5)).toEqual([{ deviceKey: "M_1", terminal: "D" }]);
     expect(idx.get(7)).toEqual([
       { deviceKey: "M_1", terminal: "S" },
-      { deviceKey: "VDD", terminal: "PLUS" },
+      { deviceKey: "VDD:7", terminal: "PLUS" },
     ]);
   });
 });
 
 describe("routeNetLocal", () => {
   const noObs: Obstacle[] = [];
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
 
   it("two anchors → single polyline, orthogonal, deterministic", () => {
-    const w1 = routeNetLocal([{ x: 0, y: 0 }, { x: 100, y: 50 }], noObs);
+    const w1 = routeNetLocal([ai(0, 0, "a"), ai(100, 50, "b")], noObs);
     expect(w1.polylines).toHaveLength(1);
     expect(w1.junctions).toHaveLength(0);
     const path = w1.polylines[0];
@@ -77,22 +82,22 @@ describe("routeNetLocal", () => {
       // each segment axis-aligned
       expect(path[i].x === path[i - 1].x || path[i].y === path[i - 1].y).toBe(true);
     }
-    const w2 = routeNetLocal([{ x: 0, y: 0 }, { x: 100, y: 50 }], noObs);
+    const w2 = routeNetLocal([ai(0, 0, "a"), ai(100, 50, "b")], noObs);
     expect(w2).toEqual(w1);
   });
 
   it("avoids an obstacle between anchors when a clean candidate exists", () => {
     // Straight H-first route would cross the box at (40..60, 20..30)
     const obs: Obstacle[] = [{ x: 40, y: 20, w: 20, h: 10 }];
-    const w = routeNetLocal([{ x: 0, y: 25 }, { x: 100, y: 25 }], obs);
+    const w = routeNetLocal([ai(0, 25, "a"), ai(100, 25, "b")], obs);
     // Path must not pass through the obstacle interior
     for (const line of w.polylines) {
       for (let i = 1; i < line.length; i++) {
         const a = line[i - 1], b = line[i];
         const y = a.y;
-        if (y > 20 - 4 && y < 30 + 4) {
+        if (y > 20 - 12 && y < 30 + 12) {
           const lo = Math.min(a.x, b.x), hi = Math.max(a.x, b.x);
-          expect(hi <= 40 - 4 || lo >= 60 + 4).toBe(true);
+          expect(hi <= 40 - 12 || lo >= 60 + 12).toBe(true);
         }
       }
     }
@@ -100,7 +105,7 @@ describe("routeNetLocal", () => {
 
   it("three anchors → hub with junction", () => {
     const w = routeNetLocal(
-      [{ x: 0, y: 0 }, { x: 100, y: 0 }, { x: 50, y: 100 }],
+      [ai(0, 0, "a"), ai(100, 0, "b"), ai(50, 100, "c")],
       noObs,
     );
     expect(w.polylines).toHaveLength(3);
@@ -111,7 +116,21 @@ describe("routeNetLocal", () => {
 
   it("empty / single anchors → no wires", () => {
     expect(routeNetLocal([], noObs).polylines).toHaveLength(0);
-    expect(routeNetLocal([{ x: 5, y: 5 }], noObs).polylines).toHaveLength(0);
+    expect(routeNetLocal([ai(5, 5)], noObs).polylines).toHaveLength(0);
+  });
+
+  it("returns per-edge trace for surgical re-route", () => {
+    const w = routeNetLocal([ai(0, 0, "a"), ai(100, 0, "b")], noObs);
+    expect(w.edges).toHaveLength(1);
+    expect(w.edges![0].fromKey).toBe("a");
+    expect(w.edges![0].toKey).toBe("b");
+    expect(w.edges![0].polylines).toHaveLength(1);
+  });
+
+  it("N-terminal → one edge per spoke to hub", () => {
+    const w = routeNetLocal([ai(0, 0, "a"), ai(100, 0, "b"), ai(50, 100, "c")], noObs);
+    expect(w.edges).toHaveLength(3);
+    expect(w.edges!.every((e) => e.toKey === "__hub__")).toBe(true);
   });
 });
 
@@ -140,7 +159,7 @@ describe("gridFallback", () => {
     ]);
     const result = gridFallback(devices, nets, table, { vdd: "VDD", gnd: "GND" });
     expect(result.usedFallback).toBe(true);
-    expect(Object.keys(result.positions).sort()).toEqual(["GND", "M_1", "M_2", "R_1", "VDD"].sort());
+    expect(Object.keys(result.positions).sort()).toEqual(["GND:4", "M_1", "M_2", "R_1", "VDD:3"].sort());
     // Every net got routed
     for (const netId of [1, 2, 3, 4]) {
       const w = result.wires.get(netId);
@@ -222,9 +241,9 @@ describe("runInteractiveLayout (ELK, node)", () => {
     });
     expect(res.usedFallback).toBe(false);
     expect(res.applied).toEqual({ strategy: "BRANDES_KOEPF", direction: "DOWN", compaction: 4 });
-    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2", "VDD"]);
+    expect(Object.keys(res.positions).sort()).toEqual(["M_1", "M_2", "VDD:3"]);
     // DOWN direction: VDD symbol (driver) above the nmos S pin it feeds
-    expect(res.positions["VDD"].y).toBeLessThan(res.positions["M_1"].y);
+    expect(res.positions["VDD:3"].y).toBeLessThan(res.positions["M_1"].y);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
   }, 30000);
 
@@ -240,12 +259,11 @@ describe("runInteractiveLayout (ELK, node)", () => {
       betweenLayers: 15,
       edgeEdge: 20,
       edgeNode: 25,
-      mergeEdges: true,
       favorStraightEdges: true,
     });
     expect(res.usedFallback).toBe(false);
     expect(res.wires.get(1)?.polylines.length).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    expect(res.positions["VDD:3"]).toBeDefined();
   }, 30000);
 
   it("direction RIGHT puts the driver left of its consumer", async () => {
@@ -261,7 +279,8 @@ describe("runInteractiveLayout (ELK, node)", () => {
       compaction: 0,
     });
     expect(res.applied?.direction).toBe("RIGHT");
-    expect(res.positions["VDD"].x).toBeLessThan(res.positions["M_2"].x);
+    // VDD is the consumer (sink) now, so it's to the RIGHT of devices in RIGHT direction
+    expect(res.positions["VDD:3"].x).toBeGreaterThan(res.positions["M_2"].x);
   }, 30000);
 
   // Regression: nets used to lose ALL their ELK edges (and thus wires)
@@ -355,7 +374,7 @@ describe("runInteractiveLayout (ELK, node)", () => {
     expect(res.usedFallback).toBe(false);
     // VDD rail wired (≥1 polyline), VDD symbol placed, and ELK didn't blow up
     expect(res.wires.get(3)?.polylines.length ?? 0).toBeGreaterThan(0);
-    expect(res.positions["VDD"]).toBeDefined();
+    expect(res.positions["VDD:3"]).toBeDefined();
   }, 30000);
 });
 
@@ -451,4 +470,138 @@ describe("hierarchy blocks", () => {
       expect(res.wires.get(netId)?.polylines.length ?? 0, `net ${netId}`).toBeGreaterThan(0);
     }
   }, 30000);
+});
+
+describe("WireGrid (wire-wire spacing)", () => {
+  it("reports zero proximity for a clear segment", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }], 10);
+    // Segment far below the wire at y=0 — no proximity.
+    expect(grid.proximityLength({ x: 0, y: 50 }, { x: 100, y: 50 })).toBe(0);
+  });
+
+  it("penalizes a segment running on top of an existing wire", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }], 10);
+    // Horizontal segment exactly on the wire — full proximity.
+    const prox = grid.proximityLength({ x: 0, y: 0 }, { x: 100, y: 0 });
+    expect(prox).toBeGreaterThan(90);
+  });
+
+  it("inflates to neighbours — segment within gap scores proximity", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }], 10);
+    // Segment 5px below the wire — within the 10px gap, should score.
+    const prox = grid.proximityLength({ x: 0, y: 5 }, { x: 100, y: 5 });
+    expect(prox).toBeGreaterThan(0);
+  });
+
+  it("cell size clamps to minimum 2 to avoid degenerate grids", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: 10, y: 0 } }], 0);
+    // With gap=0, cell size clamps to 2. Segment on wire still scores.
+    const prox = grid.proximityLength({ x: 0, y: 0 }, { x: 10, y: 0 });
+    expect(prox).toBeGreaterThan(0);
+  });
+});
+
+describe("routeNetLocal spacing options", () => {
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
+  it("uses edgeNode margin to steer wires around obstacles", () => {
+    // Two anchors with a device obstacle between them.
+    const obstacle: Obstacle = { x: 40, y: -10, w: 20, h: 60 };
+    const anchors = [ai(0, 0, "a"), ai(100, 0, "b")];
+    // With small edgeNode (1) the wire can pass closer to the device.
+    const tight = routeNetLocal(anchors, [obstacle], { edgeNode: 1 });
+    // With large edgeNode (40) the wire must detour further from the device.
+    const wide = routeNetLocal(anchors, [obstacle], { edgeNode: 40 });
+    // The wide-margin path should have a larger vertical detour.
+    const maxY_tight = Math.max(...tight.polylines.flat().map((p) => Math.abs(p.y)));
+    const maxY_wide = Math.max(...wide.polylines.flat().map((p) => Math.abs(p.y)));
+    expect(maxY_wide).toBeGreaterThan(maxY_tight);
+  });
+
+  it("wireGrid pushes a candidate wire away from an existing segment", () => {
+    // Existing wire along y=0. New net: two anchors at y=5 (would overlap).
+    const existing = [{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }];
+    const grid = new WireGrid(existing, 10);
+    const obstacle: Obstacle = { x: 40, y: 20, w: 20, h: 20 };
+    const anchors = [ai(0, 5, "a"), ai(100, 5, "b")];
+    // Without grid, the straight L-paths through y=5 might be fine.
+    const noGrid = routeNetLocal(anchors, [obstacle]);
+    // With grid, the wire at y=5 scores proximity → detours away from y=0.
+    const withGrid = routeNetLocal(anchors, [obstacle], { wireGrid: grid, edgeEdge: 10 });
+    // With grid, max |y| should be at least as far from y=0 as without.
+    const maxY_noGrid = Math.max(...noGrid.polylines.flat().map((p) => p.y));
+    const maxY_withGrid = Math.max(...withGrid.polylines.flat().map((p) => p.y));
+    expect(maxY_withGrid).toBeGreaterThanOrEqual(maxY_noGrid);
+  });
+
+  it("defaults to edgeNode=12 when options omitted", () => {
+    const obstacle: Obstacle = { x: 40, y: -5, w: 20, h: 30 };
+    const anchors = [ai(0, 0, "a"), ai(100, 0, "b")];
+    const def = routeNetLocal(anchors, [obstacle]);
+    const explicit = routeNetLocal(anchors, [obstacle], { edgeNode: 12 });
+    // Same result when default matches explicit.
+    expect(def.polylines).toEqual(explicit.polylines);
+  });
+});
+
+describe("surgical re-route (edge trace)", () => {
+  const ai = (x: number, y: number, k = "d", t = "T") => ({ point: { x, y }, deviceKey: k, terminal: t });
+  it("preserves untouched edges when only one device of a 2-terminal net moves", () => {
+    // Simulate an ELK-produced wire with two edges (a-b and b-c).
+    const edgeAB: TracedEdge = {
+      id: "e1", netId: 1, fromKey: "a", toKey: "b", fromTerminal: "D", toTerminal: "S",
+      polylines: [[{ x: 0, y: 0 }, { x: 50, y: 0 }, { x: 100, y: 0 }]],
+    };
+    const edgeBC: TracedEdge = {
+      id: "e2", netId: 1, fromKey: "b", toKey: "c", fromTerminal: "S", toTerminal: "G",
+      polylines: [[{ x: 100, y: 0 }, { x: 100, y: 50 }, { x: 100, y: 100 }]],
+    };
+    const wd: WireData = {
+      polylines: [...edgeAB.polylines, ...edgeBC.polylines],
+      junctions: [{ x: 100, y: 0 }],
+      edges: [edgeAB, edgeBC],
+    };
+    // Surgical re-route touching only "a" must keep edgeBC pixel-identical.
+    const pos: Record<string, { x: number; y: number }> = { a: { x: 0, y: 10 }, b: { x: 100, y: 0 }, c: { x: 100, y: 100 } };
+    const members = [{ deviceKey: "a", terminal: "D" }, { deviceKey: "b", terminal: "S" }, { deviceKey: "c", terminal: "G" }];
+    const movedSet = new Set(["a"]);
+    const terminalOf = new Map(members.map((m) => [m.deviceKey, m.terminal]));
+    const noObs: Obstacle[] = [];
+    const opts = { edgeNode: 12, edgeEdge: 10 };
+
+    const newEdges = wd.edges!.map((edge) => {
+      if (!movedSet.has(edge.fromKey) && !movedSet.has(edge.toKey)) return edge;
+      const fromTerm = terminalOf.get(edge.fromKey);
+      const toTerm = terminalOf.get(edge.toKey);
+      const fromAnchor = fromTerm ? { x: pos[edge.fromKey].x, y: pos[edge.fromKey].y } : undefined;
+      const toAnchor = toTerm ? { x: pos[edge.toKey].x, y: pos[edge.toKey].y } : undefined;
+      if (!fromAnchor || !toAnchor) return edge;
+      const routed = routeNetLocal(
+        [{ point: fromAnchor, deviceKey: edge.fromKey, terminal: edge.fromTerminal }, { point: toAnchor, deviceKey: edge.toKey, terminal: edge.toTerminal }],
+        noObs, opts,
+      );
+      return { ...edge, polylines: (routed.edges ?? [])[0]?.polylines ?? edge.polylines };
+    });
+
+    // edgeBC (b-c) untouched — identical polylines.
+    expect(newEdges[1].polylines).toEqual(edgeBC.polylines);
+    // edgeAB (a-b) re-routed — different from original (a moved from y=0 to y=10).
+    expect(newEdges[0].polylines).not.toEqual(edgeAB.polylines);
+    // Re-routed edge still connects a→b.
+    expect(newEdges[0].fromKey).toBe("a");
+    expect(newEdges[0].toKey).toBe("b");
+  });
+
+  it("full re-route (no edges trace) falls back to hub-spoke", () => {
+    // WireData without edges → full re-route path.
+    const wd: WireData = {
+      polylines: [[{ x: 0, y: 0 }, { x: 50, y: 0 }]],
+      junctions: [],
+    };
+    expect(wd.edges).toBeUndefined();
+    // routeNetLocal with 3 anchors produces a hub + 3 spokes.
+    const anchors = [ai(0, 0, "a"), ai(100, 0, "b"), ai(50, 100, "c")];
+    const full = routeNetLocal(anchors, []);
+    expect(full.polylines).toHaveLength(3);
+    expect(full.junctions).toHaveLength(1);
+  });
 });

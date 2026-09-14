@@ -42,6 +42,8 @@ import {
   transformPin,
   orientedSize,
   deviceObstacle,
+  WireGrid,
+  AnchorInfo,
   blockDevices,
   blockSize,
   blockPortStubs,
@@ -61,6 +63,7 @@ import type {
   LayoutDirection,
   CompactionLevel,
 } from "../../lib/schematic/netlist2svgSkin";
+import { computeJunctions } from "../../lib/schematic/netlist";
 
 // ── Props ────────────────────────────────────────────────────────
 
@@ -83,12 +86,17 @@ interface Props {
   betweenLayers?: number;
   edgeEdge?: number;
   edgeNode?: number;
-  mergeEdges?: boolean;
   favorStraightEdges?: boolean;
+  /** Drag re-route mode: "surgical" (default) re-routes only edges touching
+   *  the moved device; "full" re-routes the whole net. Shift overrides to
+   *  full for one gesture. */
+  dragMode?: "surgical" | "full";
   /** Hierarchy blocks (floorplan regions as subcircuit rectangles). */
   blocks?: HierarchyBlock[];
   /** Double-click on a hierarchy block — drill into that region's schematic. */
   onOpenBlock?: (regionId: string) => void;
+  /** Boundary pins for the currently-open region (shown as labeled pins at edges). */
+  regionPins?: Array<{ netId: number; name: string; direction: "input" | "output" }>;
 }
 
 // ── Constants ────────────────────────────────────────────────────
@@ -130,7 +138,7 @@ interface RenderNode {
 export function InteractiveAnalogSchematic({
   devices, namedNets, ioNetIds, scopeKey, vdd, gnd,
   layoutStrategy = "BRANDES_KOEPF", layoutDirection = "DOWN", compactionLevel = 2,
-  nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks, onOpenBlock,
+  nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, dragMode = "surgical", blocks, onOpenBlock, regionPins,
 }: Props) {
   const opts = useMemo(
     () => ({
@@ -139,11 +147,12 @@ export function InteractiveAnalogSchematic({
       strategy: layoutStrategy,
       direction: layoutDirection,
       compaction: compactionLevel,
-      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges,
+      nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges,
       blocks,
+      blockPins: regionPins,
     }),
     [vdd, gnd, ioNetIds, layoutStrategy, layoutDirection, compactionLevel,
-      nodeNode, betweenLayers, edgeEdge, edgeNode, mergeEdges, favorStraightEdges, blocks],
+      nodeNode, betweenLayers, edgeEdge, edgeNode, favorStraightEdges, blocks, regionPins],
   );
   const table = useMemo(() => parseSymbolSkin(), []);
 
@@ -179,6 +188,22 @@ export function InteractiveAnalogSchematic({
   // Wires: ELK routes patched by local re-routes (drag / position overrides).
   const [wires, setWires] = useState<Map<number, WireData>>(new Map());
 
+  // Shift key state — when held during a drag, overrides to full re-route.
+  const shiftRef = useRef(false);
+  useEffect(() => {
+    const down = (e: KeyboardEvent) => { if (e.key === "Shift") shiftRef.current = true; };
+    const up = (e: KeyboardEvent) => { if (e.key === "Shift") shiftRef.current = false; };
+    const blur = () => { shiftRef.current = false; };
+    window.addEventListener("keydown", down);
+    window.addEventListener("keyup", up);
+    window.addEventListener("blur", blur);
+    return () => {
+      window.removeEventListener("keydown", down);
+      window.removeEventListener("keyup", up);
+      window.removeEventListener("blur", blur);
+    };
+  }, []);
+
   // Powers + io + pin lookups (stable per dataset)
   const powers = useMemo(() => powerDevices(devices, namedNets, opts), [devices, namedNets, opts]);
   const ioNets = useMemo(() => ioNetList(devices, namedNets, opts), [devices, namedNets, opts]);
@@ -209,9 +234,37 @@ export function InteractiveAnalogSchematic({
     }) as unknown as import("shared").AnalogDevice),
     [ioNets],
   );
+  // Block boundary pin pseudo-devices + lookup (like io pins).
+  const bpDevs = useMemo<import("shared").AnalogDevice[]>(
+    () => (regionPins ?? []).map((bp) => {
+      const isInput = bp.direction === "input";
+      return {
+        id: `bp:${bp.netId}`,
+        kind: "__blockpin",
+        instanceName: `bp:${bp.netId}`,
+        layer: "metal1",
+        bbox: { x: 0, y: 0, width: 1, height: 1 },
+        geometry: {},
+        terminals: [{ name: isInput ? "A" : "Y", netId: bp.netId }],
+      } as unknown as import("shared").AnalogDevice;
+    }),
+    [regionPins],
+  );
+  const bpPinLookup = useMemo(() => {
+    const map = new Map(ioPinLookup);
+    for (const bp of regionPins ?? []) {
+      const isInput = bp.direction === "input";
+      map.set(`bp:${bp.netId}`, (t: string) => {
+        if (isInput && t === "A") return { dx: 0, dy: 10 };
+        if (!isInput && t === "Y") return { dx: 30, dy: 10 };
+        return undefined;
+      });
+    }
+    return map;
+  }, [ioPinLookup, regionPins]);
   const netIndex = useMemo(
-    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? []), ...ioDevs]),
-    [devices, opts, powers, blocks, ioDevs],
+    () => buildNetIndex(devices, opts, [...powers, ...blockDevices(blocks ?? []), ...ioDevs, ...bpDevs]),
+    [devices, opts, powers, blocks, ioDevs, bpDevs],
   );
 
   /** Final render positions: stored/persisted positions win over ELK's. */
@@ -246,7 +299,8 @@ export function InteractiveAnalogSchematic({
     for (const p of powers) {
       const key = deviceKey(p);
       if (positions[key] == null) continue;
-      const powerKind: "vcc" | "gnd" = key === (opts.gnd ?? "GND") ? "gnd" : "vcc";
+      // power symbol key is "GDD:109" or "VDD:177" — extract kind from prefix
+      const powerKind: "vcc" | "gnd" = key.startsWith("GND") || key.startsWith("Gnd") || key.startsWith("gnd") ? "gnd" : "vcc";
       out.push({
         key,
         kind: "power",
@@ -265,6 +319,21 @@ export function InteractiveAnalogSchematic({
         template: table.byKey.get("inputExt"),
         size: elkResult.sizes[key] ?? { w: 30, h: 20 },
         label: io.name,
+      });
+    }
+    // Block boundary pins (subcircuit external nets).
+    // Input pins use outputExt (arrow pointing into circuit), output pins
+    // use inputExt (arrow pointing out of circuit).
+    for (const bp of regionPins ?? []) {
+      const key = `bp:${bp.netId}`;
+      if (positions[key] == null) continue;
+      const isInput = bp.direction === "input";
+      out.push({
+        key,
+        kind: "io",
+        template: table.byKey.get(isInput ? "outputExt" : "inputExt"),
+        size: elkResult.sizes[key] ?? { w: 30, h: 20 },
+        label: bp.name,
       });
     }
 
@@ -307,9 +376,33 @@ export function InteractiveAnalogSchematic({
     [netIndex],
   );
 
-  /** Re-route specific nets against current positions. */
+  /** Compute the world-space anchor of a device terminal. */
+  const computeAnchor = useCallback(
+    (deviceKey: string, terminal: string, pos: Record<string, Point>): Point | undefined => {
+      const pin = bpPinLookup.get(deviceKey);
+      const p = pos[deviceKey];
+      const off = pin?.(terminal);
+      if (!p || !off) return undefined;
+      const size = elkResult?.sizes[deviceKey] ?? { w: 30, h: 40 };
+      const t = transformPin({ dx: off.dx, dy: off.dy }, size.w, size.h, orientations[deviceKey]);
+      return { x: p.x + t.dx, y: p.y + t.dy };
+    },
+    [bpPinLookup, elkResult, orientations],
+  );
+
+  /** Re-route specific nets against current positions.
+   *  mode "surgical" (default): only re-route edges touching moved devices;
+   *  the rest stay pixel-identical to the ELK pass. mode "full": old
+   *  routeNetLocal hub-spoke re-route of the whole net. */
   const rerouteNets = useCallback(
-    (base: Map<number, WireData>, netIds: number[], pos: Record<string, Point>, excludeKey?: string): Map<number, WireData> => {
+    (
+      base: Map<number, WireData>,
+      netIds: number[],
+      pos: Record<string, Point>,
+      excludeKey?: string,
+      mode: "surgical" | "full" = "surgical",
+      movedKeys: string[] = [],
+    ): Map<number, WireData> => {
       const next = new Map(base);
       const obstacles = Object.entries(pos)
         .filter(([key]) => key !== excludeKey)
@@ -317,25 +410,151 @@ export function InteractiveAnalogSchematic({
           const size = elkResult?.sizes[key] ?? { w: 30, h: 40 };
           return deviceObstacle(p, size, orientations[key]);
         });
+      // Build wire-grid from OTHER nets' segments so the local router
+      // keeps `edgeEdge` clearance between wires (ELK parity). The grid
+      // is built INCREMENTALLY: after each net is routed, its segments
+      // are added so subsequent nets avoid it. Without this, two nets
+      // re-routed in the same call would share an empty grid and overlap.
+      const reRouted = new Set(netIds);
+      const gridSegments: Array<{ a: Point; b: Point }> = [];
+      for (const [nid, wd] of base) {
+        if (reRouted.has(nid)) continue;
+        for (const poly of wd.polylines) {
+          for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+        }
+      }
+      const edgeGap = edgeEdge ?? 10;
+      const opts = { edgeNode: edgeNode ?? 12, edgeEdge: edgeGap };
+      const movedSet = new Set(movedKeys);
       for (const netId of netIds) {
-        const members = netIndex.get(netId);
-        if (!members) continue;
-        const anchors = members
-          .map((m) => {
-            const pin = ioPinLookup.get(m.deviceKey);
-            const p = pos[m.deviceKey];
-            const off = pin?.(m.terminal);
-            if (!p || !off) return undefined;
-            const size = elkResult?.sizes[m.deviceKey] ?? { w: 30, h: 40 };
-            const t = transformPin({ dx: off.dx, dy: off.dy }, size.w, size.h, orientations[m.deviceKey]);
-            return { x: p.x + t.dx, y: p.y + t.dy };
-          })
-          .filter((p): p is Point => !!p);
-        next.set(netId, routeNetLocal(anchors, obstacles));
+        const wd = base.get(netId);
+        if (!wd) continue;
+        // Build a fresh grid for this net: other nets + already-routed nets.
+        const wireGrid = gridSegments.length > 0 ? new WireGrid(gridSegments, edgeGap) : undefined;
+        const netOpts = { ...opts, wireGrid };
+        if (mode === "surgical" && wd.edges && wd.edges.length > 0) {
+          // Surgical: only re-route edges touching a moved device.
+          // If any edge fails to compute an anchor (missing pin lookup,
+          // etc.), fall back to full re-route for this net.
+          let failed = false;
+          const newEdges = wd.edges.map((edge) => {
+            const incident = movedSet.has(edge.fromKey) || movedSet.has(edge.toKey);
+            if (!incident) return edge;
+            // Use the terminal name stored on the edge (from the ELK port
+            // id) — correct even when a device has multiple terminals on
+            // the same net (e.g. PNP base+collector in a current mirror).
+            const fromAnchor = computeAnchor(edge.fromKey, edge.fromTerminal, pos);
+            // Hub/spoke stub: keep hub at its existing junction position.
+            let toAnchor: Point | undefined;
+            if (edge.toKey === "__hub__" || edge.fromKey === "__hub__" || edge.toKey === "__stub__" || edge.fromKey === "__stub__") {
+              toAnchor = wd.junctions[0] ?? undefined;
+            } else {
+              toAnchor = computeAnchor(edge.toKey, edge.toTerminal, pos);
+            }
+            if (!fromAnchor || !toAnchor) {
+              failed = true;
+              return edge;
+            }
+            const routed = routeNetLocal(
+              [{ point: fromAnchor, deviceKey: edge.fromKey, terminal: edge.fromTerminal }, { point: toAnchor, deviceKey: edge.toKey, terminal: edge.toTerminal }],
+              obstacles,
+              netOpts,
+            );
+            return { ...edge, polylines: (routed.edges ?? [])[0]?.polylines ?? edge.polylines };
+          });
+          if (failed) {
+            // Fallback to full re-route for this net.
+            const members = netIndex.get(netId);
+            if (members) {
+              const anchors = members
+                .map((m) => {
+                  const a = computeAnchor(m.deviceKey, m.terminal, pos);
+                  return a ? { point: a, deviceKey: m.deviceKey, terminal: m.terminal } : undefined;
+                })
+                .filter((a): a is AnchorInfo => !!a);
+              const newWd = routeNetLocal(anchors, obstacles, netOpts);
+              next.set(netId, newWd);
+              for (const poly of newWd.polylines) {
+                for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+              }
+              continue;
+            }
+          }
+          const placed = newEdges.map((e) => ({ id: e.id, netId, polylines: e.polylines }));
+          const junctions = computeJunctions(placed);
+          const newWd = { polylines: newEdges.flatMap((e) => e.polylines), junctions, edges: newEdges };
+          next.set(netId, newWd);
+          // Add this net's routed segments to the grid for subsequent nets.
+          for (const poly of newWd.polylines) {
+            for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+          }
+        } else {
+          // Full re-route: old hub-spoke behavior (routeNetLocal).
+          const members = netIndex.get(netId);
+          if (!members) continue;
+          const anchors = members
+            .map((m) => {
+              const a = computeAnchor(m.deviceKey, m.terminal, pos);
+              return a ? { point: a, deviceKey: m.deviceKey, terminal: m.terminal } : undefined;
+            })
+            .filter((a): a is AnchorInfo => !!a);
+          const newWd = routeNetLocal(anchors, obstacles, netOpts);
+          next.set(netId, newWd);
+          // Add this net's routed segments to the grid for subsequent nets.
+          for (const poly of newWd.polylines) {
+            for (let i = 1; i < poly.length; i++) gridSegments.push({ a: poly[i - 1], b: poly[i] });
+          }
+        }
       }
       return next;
     },
-    [elkResult, netIndex, orientations],
+    [elkResult, netIndex, orientations, edgeEdge, edgeNode, computeAnchor],
+  );
+
+  /** Merge power-symbol positions (from ELK) into the effective positions
+   *  map. Surgical re-route needs these to compute anchors for edges
+   *  incident to power symbols — without them, computeAnchor fails and
+   *  surgical falls back to full re-route, destroying the ELK bus. */
+  const positionsWithPower = useCallback(
+    (pos: Record<string, Point>): Record<string, Point> => {
+      if (!elkResult) return pos;
+      const merged = { ...pos };
+      for (const [key, p] of Object.entries(elkResult.positions)) {
+        if ((key.startsWith("GND") || key.startsWith("VDD") || key.startsWith("VSS") || key.startsWith("VCC")) && !(key in merged)) {
+          merged[key] = p;
+        }
+      }
+      return merged;
+    },
+    [elkResult],
+  );
+
+  /** Nearest point on any orthogonal segment of `polylines` to `p`
+   *  (used to attach a locked-device stub to the existing trunk). */
+  const nearestOnPolylines = useCallback(
+    (p: Point, polylines: Point[][]): Point => {
+      let best: Point = polylines[0]?.[0] ?? p;
+      let bestD = Infinity;
+      for (const poly of polylines) {
+        for (let i = 1; i < poly.length; i++) {
+          const a = poly[i - 1], b = poly[i];
+          let q: Point;
+          if (Math.abs(a.x - b.x) < 0.001) {
+            // vertical segment — clamp y
+            const lo = Math.min(a.y, b.y), hi = Math.max(a.y, b.y);
+            q = { x: a.x, y: Math.max(lo, Math.min(hi, p.y)) };
+          } else {
+            // horizontal segment — clamp x
+            const lo = Math.min(a.x, b.x), hi = Math.max(a.x, b.x);
+            q = { x: Math.max(lo, Math.min(hi, p.x)), y: a.y };
+          }
+          const d = (q.x - p.x) ** 2 + (q.y - p.y) ** 2;
+          if (d < bestD) { bestD = d; best = q; }
+        }
+      }
+      return best;
+    },
+    [],
   );
 
   /** Merge an ELK result: stored positions win (unless ignoreStored),
@@ -364,34 +583,68 @@ export function InteractiveAnalogSchematic({
       st.applyPositions(scopeKey, toApply);
 
       // Patch wires for every net touching a device whose effective
-      // position differs from the ELK routing assumption, plus every
-      // net of a locked device (locked nodes were excluded from ELK's
-      // graph entirely), plus any device that carries a manual
-      // orientation (ELK routed the net at rot 0 / flip none).
+      // position differs from the ELK routing assumption, plus any device
+      // that carries a manual orientation (ELK routed the net at rot 0 /
+      // flip none). Surgical mode re-routes only the touched edges.
       const dirty = new Set<number>();
+      const movedKeys: string[] = [];
       for (const key of changedKeys) {
+        movedKeys.push(key);
         for (const netId of netsTouched([key])) dirty.add(netId);
-      }
-      for (const key of Object.keys(isLocked)) {
-        if (isLocked[key] && res.positions[key] == null) {
-          for (const netId of netsTouched([key])) dirty.add(netId);
-        }
       }
       for (const key of Object.keys(storedOrient)) {
         const o = storedOrient[key];
         if (o && (o.rot !== 0 || o.flip !== "none")) {
+          movedKeys.push(key);
           for (const netId of netsTouched([key])) dirty.add(netId);
         }
       }
       let nextWires = res.wires;
       if (dirty.size > 0) {
-        nextWires = rerouteNets(res.wires, [...dirty], final);
+        nextWires = rerouteNets(res.wires, [...dirty], final, undefined, dragMode, movedKeys);
       }
+
+      // Locked devices were excluded from ELK's graph entirely — their
+      // anchor has no routed connection. Surgical mode above won't touch
+      // them (no edges reference a locked key), so attach a synthetic
+      // stub from each locked anchor to the nearest point on the existing
+      // trunk. This preserves the ELK trunk quality instead of a full
+      // hub-spoke re-route of the whole net.
+      for (const key of Object.keys(isLocked)) {
+        if (!isLocked[key] || res.positions[key] != null) continue; // not excluded
+        for (const netId of netsTouched([key])) {
+          const wd = nextWires.get(netId);
+          if (!wd) continue;
+          const members = netIndex.get(netId);
+          const member = members?.find((m) => m.deviceKey === key);
+          if (!member) continue;
+          const anchor = computeAnchor(key, member.terminal, final);
+          if (!anchor) continue;
+          const target = nearestOnPolylines(anchor, wd.polylines);
+          const stub = routeNetLocal(
+            [{ point: anchor, deviceKey: key, terminal: member.terminal }, { point: target, deviceKey: "__stub__", terminal: "" }],
+            Object.entries(final)
+              .filter(([k]) => k !== key)
+              .map(([k, p]) => deviceObstacle(p, elkResult?.sizes[k] ?? { w: 30, h: 40 }, orientations[k])),
+            { edgeNode: edgeNode ?? 12, edgeEdge: edgeEdge ?? 10 },
+          );
+          const stubEdge = (stub.edges ?? [])[0];
+          if (!stubEdge) continue;
+          const edges = wd.edges ? [...wd.edges, { ...stubEdge, id: `${key}-stub`, netId, fromKey: key, toKey: "__stub__" }] : [stubEdge];
+          const placed = edges.map((e) => ({ id: e.id, netId, polylines: e.polylines }));
+          nextWires.set(netId, {
+            polylines: edges.flatMap((e) => e.polylines),
+            junctions: computeJunctions(placed),
+            edges,
+          });
+        }
+      }
+
       setElkResult(res);
       setWires(nextWires);
       setLaying(false);
     },
-    [scopeKey, store, netsTouched, rerouteNets],
+    [scopeKey, store, netsTouched, rerouteNets, dragMode, netIndex, elkResult, orientations, edgeEdge, edgeNode, computeAnchor, nearestOnPolylines],
   );
 
   /** Run ELK (async, cancellation-guarded). Locked devices are excluded
@@ -436,7 +689,7 @@ export function InteractiveAnalogSchematic({
     () => `${devices.length}|${namedNets.size}|${[...devices].map((d) => deviceKey(d)).join(",")}|${(blocks ?? []).map((b) => `${b.regionId}:${b.name}:${b.nets.map((n) => `${n.name}:${n.direction}`).join(",")}`).join(";")}`,
     [devices, namedNets, blocks],
   );
-  const settingsSig = `${layoutStrategy}|${layoutDirection}|${compactionLevel}|${nodeNode}|${betweenLayers}|${edgeEdge}|${edgeNode}|${mergeEdges}|${favorStraightEdges}`;
+  const settingsSig = `${layoutStrategy}|${layoutDirection}|${compactionLevel}|${nodeNode}|${betweenLayers}|${edgeEdge}|${edgeNode}|${favorStraightEdges}`;
   const prevSigRef = useRef<{ data: string; settings: string } | null>(null);
   useEffect(() => {
     // Drop persisted entries for devices that no longer exist.
@@ -532,6 +785,8 @@ export function InteractiveAnalogSchematic({
   const [netTooltip, setNetTooltip] = useState<{ text: string; x: number; y: number } | null>(null);
   /** World-space marquee rect while dragging empty area with Shift. */
   const [marquee, setMarquee] = useState<{ x0: number; y0: number; x1: number; y1: number } | null>(null);
+  /** Effective drag mode shown in the status bar while a drag is active. */
+  const [liveDragMode, setLiveDragMode] = useState<"surgical" | "full" | null>(null);
 
   /** All selectable render keys (devices only — power/io aren't draggable). */
   const deviceKeys = useMemo(() => devices.map((d) => deviceKey(d)), [devices]);
@@ -547,6 +802,8 @@ export function InteractiveAnalogSchematic({
     sx: number; sy: number;
     grabDX: number; grabDY: number;
     moved: boolean;
+    /** Shift held at pointerdown — full re-route + click toggles selection. */
+    shiftHeld: boolean;
     netIds: number[];
     raf: number;
     pending: Point | null;
@@ -558,21 +815,17 @@ export function InteractiveAnalogSchematic({
       e.stopPropagation();
       const key = node.key;
       const lockedNow = locked[key];
+      const shiftHeld = e.shiftKey;
 
-      // Shift+click: toggle membership, no drag.
-      if (e.shiftKey) {
-        setSelection((cur) => {
-          const set = new Set(cur);
-          if (set.has(key)) set.delete(key); else set.add(key);
-          return [...set];
-        });
-        return;
-      }
       // Plain click on a NOT-yet-selected device → narrow to it.
-      if (!selectionSet.has(key)) {
+      if (!selectionSet.has(key) && !shiftHeld) {
         setSelection([key]);
       }
-      if (lockedNow) return; // locked devices don't move
+      if (lockedNow && !shiftHeld) return; // locked devices don't move (unless shift-toggling)
+
+      // Shift+click (no drag) toggles selection — handled in endPointer.
+      // Start the drag regardless of Shift so Shift+drag works.
+      if (lockedNow) return;
 
       svgRef.current?.setPointerCapture(e.pointerId);
       const p = worldFromEvent(e, view, svgRef.current);
@@ -591,6 +844,7 @@ export function InteractiveAnalogSchematic({
         grabDX: p.x - (positions[grabKey]?.x ?? 0),
         grabDY: p.y - (positions[grabKey]?.y ?? 0),
         moved: false,
+        shiftHeld,
         netIds: netsTouched(group),
         raf: 0,
         pending: null,
@@ -616,10 +870,14 @@ export function InteractiveAnalogSchematic({
         if (!b) continue;
         st.dragMove(key, { x: b.x + dx, y: b.y + dy });
       }
-      const posNow = effectivePositions(st, scopeKey);
-      setWires((prev) => rerouteNets(prev, d.netIds, posNow));
+      const posNow = positionsWithPower(effectivePositions(st, scopeKey));
+      // Shift overrides to full re-route for this gesture; otherwise use the
+      // persisted dragMode preference.
+      const mode: "surgical" | "full" = shiftRef.current ? "full" : dragMode;
+      setLiveDragMode(mode);
+      setWires((prev) => rerouteNets(prev, d.netIds, posNow, undefined, mode, d.keys));
     },
-    [store, scopeKey, rerouteNets],
+    [store, scopeKey, rerouteNets, dragMode],
   );
 
   const onSvgPointerMove = useCallback(
@@ -683,8 +941,19 @@ export function InteractiveAnalogSchematic({
       }
       const d = dragRef.current;
       if (!d) return;
-      if (d.raf) cancelAnimationFrame(d.raf);
+      // Flush any pending pointermove before canceling the rAF — otherwise a
+      // fast click-drag-release leaves the wires unrouted at the final
+      // position (device appears visually disconnected).
+      if (d.raf) {
+        cancelAnimationFrame(d.raf);
+        d.raf = 0;
+        if (d.pending) {
+          applyDragPosition(d.pending);
+          d.pending = null;
+        }
+      }
       dragRef.current = null;
+      setLiveDragMode(null);
       svgRef.current?.releasePointerCapture(e.pointerId);
       store.getState().dragEnd();
       // A plain click (no drag) on a device keeps/narrows the selection.
@@ -742,9 +1011,9 @@ export function InteractiveAnalogSchematic({
         flip: cur.flip,
       });
     }
-    const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
-  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
   /** Flip the selection horizontally. */
   const onFlipH = useCallback(() => {
@@ -754,9 +1023,9 @@ export function InteractiveAnalogSchematic({
       const cur = orientations[key] ?? { rot: 0, flip: "none" };
       st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "h" ? "none" : "h" });
     }
-    const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
-  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
   /** Flip the selection vertically. */
   const onFlipV = useCallback(() => {
@@ -766,9 +1035,9 @@ export function InteractiveAnalogSchematic({
       const cur = orientations[key] ?? { rot: 0, flip: "none" };
       st.setOrientation(scopeKey, key, { rot: cur.rot, flip: cur.flip === "v" ? "none" : "v" });
     }
-    const posNow = effectivePositions(st, scopeKey);
-    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow));
-  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets]);
+    const posNow = positionsWithPower(effectivePositions(st, scopeKey));
+    setWires((prev) => rerouteNets(prev, netsTouched(selection), posNow, undefined, dragMode, selection));
+  }, [selection, orientations, scopeKey, store, netsTouched, rerouteNets, dragMode]);
 
   /** Select all devices on the canvas. */
   const onSelectAll = useCallback(() => {
@@ -871,9 +1140,12 @@ export function InteractiveAnalogSchematic({
       }
       const fill = el.getAttribute("fill");
       if (fill) {
-        // white fill -> none (hollow symbols); resolve vars/transparent -> none
-        if (/^#fff|transparent/i.test(fill) || fill.startsWith("var(")) {
+        // white/transparent/var -> none (hollow symbols); but var(--ink2)
+        // (wire/junction color) must stay visible -> black.
+        if (/^#fff|transparent/i.test(fill)) {
           el.setAttribute("fill", "none");
+        } else if (fill.startsWith("var(")) {
+          el.setAttribute("fill", "#000000");
         }
       }
     };
@@ -1215,11 +1487,17 @@ export function InteractiveAnalogSchematic({
 
       {/* Status line */}
       <div style={{ position: "absolute", bottom: 6, left: 6, zIndex: 1, fontSize: 10, color: "var(--ink3)", pointerEvents: "none" }}>
-        {hoverNet != null && namedNets.get(hoverNet)
-          ? `net: ${namedNets.get(hoverNet)}`
-          : blocks && blocks.length > 0
-            ? `${devices.length} devices · ${blocks.length} blocks · right-click a block to open it`
-            : `${devices.length} devices · drag to move · ctrl+wheel to zoom`}
+        {liveDragMode
+          ? (
+            <span style={{ color: liveDragMode === "full" ? "var(--warn)" : "var(--ink2)" }}>
+              {liveDragMode === "full" ? "Full re-route (Shift)" : "Surgical drag"} · hold Shift to toggle
+            </span>
+          )
+          : hoverNet != null && namedNets.get(hoverNet)
+            ? `net: ${namedNets.get(hoverNet)}`
+            : blocks && blocks.length > 0
+              ? `${devices.length} devices · ${blocks.length} blocks · right-click a block to open it`
+              : `${devices.length} devices · drag to move · ${dragMode === "surgical" ? "surgical" : "full"} re-route · hold Shift to toggle · ctrl+wheel to zoom`}
       </div>
 
       {/* Wire net-name tooltip (floats with the cursor) */}

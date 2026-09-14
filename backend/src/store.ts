@@ -34,6 +34,7 @@ export async function ensureDataStore(dataRoot: string) {
   await fs.mkdir(path.join(dataRoot, "dies"), { recursive: true });
   await fs.mkdir(path.join(dataRoot, "jobs"), { recursive: true });
   await fs.mkdir(path.join(dataRoot, "ml-jobs"), { recursive: true });
+  await fs.mkdir(path.join(dataRoot, "tmp"), { recursive: true });
   await writeJsonIfMissing(path.join(dataRoot, "index.json"), EMPTY_DIE_INDEX);
   await writeJsonIfMissing(path.join(dataRoot, "jobs", "index.json"), EMPTY_JOB_INDEX);
   await writeJsonIfMissing(path.join(dataRoot, "users.json"), []);

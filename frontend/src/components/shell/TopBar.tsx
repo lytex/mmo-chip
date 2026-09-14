@@ -15,7 +15,9 @@ const PHASE_TABS = [
   { path: "/merge", label: "Merge cells", die: "query" as const },
   { path: "/re", label: "RE cell", die: "query" as const },
   { path: "/code", label: "Code", die: "query" as const },
-  { path: "/analog-netlist", label: "Netlist (Analog)", die: "query" as const }
+  { path: "/analog-netlist", label: "Netlist (Analog)", die: "query" as const },
+  { path: "/spice-sim", label: "Spice Sim", die: "query" as const },
+  { path: "/ic-package", label: "Pin planner", die: "query" as const }
 ];
 
 function tabTarget(

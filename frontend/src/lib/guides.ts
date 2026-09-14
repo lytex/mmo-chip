@@ -34,13 +34,21 @@ export function guideHitTest(
 }
 
 /** Guides that intersect a (world) marquee rect. */
-export function guidesInRect(guides: Guide[], r: Rect): Guide[] {
+export function guidesInRect(guides: Guide[], r: Rect, fullyContained = false): Guide[] {
   const n = normalizeRect(r);
   return guides.filter((g) => {
     if (g.kind === "line") {
       return g.axis === "x"
         ? g.pos >= n.x && g.pos <= n.x + n.width
         : g.pos >= n.y && g.pos <= n.y + n.height;
+    }
+    if (fullyContained) {
+      return (
+        g.x1 >= n.x && g.x1 <= n.x + n.width &&
+        g.x2 >= n.x && g.x2 <= n.x + n.width &&
+        g.y1 >= n.y && g.y1 <= n.y + n.height &&
+        g.y2 >= n.y && g.y2 <= n.y + n.height
+      );
     }
     return segmentIntersectsRect(
       { x: g.x1, y: g.y1 },

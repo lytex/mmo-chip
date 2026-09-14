@@ -51,10 +51,10 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
   {
     title: "Die Viewer — Overlays",
     items: [
-      { key: "Ctrl+Shift+B", label: "Toggle base image" },
+      { key: "Space+B", label: "Toggle base image" },
       { key: "]", label: "Next overlay layer" },
       { key: "[", label: "Previous overlay layer" },
-      { key: "Ctrl+Shift+1–8", label: "Toggle overlay #1–#8" },
+      { key: "Space+1–8", label: "Toggle overlay #1–#8" },
     ],
   },
   {
@@ -110,6 +110,14 @@ const SHORTCUT_GROUPS: ShortcutGroup[] = [
       { key: "R", label: "Resistor format toggle" },
       { key: "M", label: "Device matching toggle" },
       { key: "Alt+1–4", label: "View: Code / Graph / Schematic / LVS" },
+    ],
+  },
+  {
+    title: "Pin Planner",
+    items: [
+      { key: "S", label: "Pan / zoom" },
+      { key: "T", label: "Text — name a package pin" },
+      { key: "W", label: "Bond — pin, then die pad" },
     ],
   },
 ];

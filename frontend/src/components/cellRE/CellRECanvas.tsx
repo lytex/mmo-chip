@@ -1139,7 +1139,7 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.imageSmoothingEnabled = v.zoom < 3;
       ctx.drawImage(img, 0, 0, box.w, box.h);
     } else if (img) {
-      // Base image hidden via Ctrl+Shift+B — show only overlays below.
+      // Base image hidden via Space+B — show only overlays below.
     } else {
       ctx.fillStyle = "rgba(255,255,255,0.04)";
       ctx.fillRect(0, 0, box.w, box.h);

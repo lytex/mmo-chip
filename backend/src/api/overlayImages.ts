@@ -15,6 +15,7 @@ import path from "node:path";
 import { Router } from "express";
 import multer from "multer";
 import sharp from "sharp";
+import { ensurePreviewImage } from "../imagePreview.js";
 import type { OverlayTileProgress, OverlayTileSourceProgress } from "shared";
 import { buildLevels } from "../dieImport/importer.js";
 
@@ -815,8 +816,22 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
         response.status(404).json({ error: "Overlay image not found" });
         return;
       }
-      response.setHeader("Cache-Control", "private, no-store");
-      response.sendFile(originalPath);
+      // Serve a downscaled cached JPEG; the IC Package view only ever shows
+      // the overlay as a ≤4096px background, so the full original (which can
+      // be tens of thousands of pixels) never has to reach the browser.
+      const previewPath = await ensurePreviewImage({
+        sourcePath: originalPath,
+        cachePath: path.join(
+          config.dataRoot,
+          "dies",
+          request.params.dieId,
+          "previews",
+          `overlay-${request.params.id}.4096.jpg`
+        )
+      });
+      response.setHeader("Cache-Control", "public, max-age=86400");
+      response.type("image/jpeg");
+      response.sendFile(previewPath);
     } catch (error) {
       next(error);
     }

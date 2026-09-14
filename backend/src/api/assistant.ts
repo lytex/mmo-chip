@@ -8,6 +8,7 @@ import { loadLibrary, listLibraries, addSpiceCell, DEFAULT_LIBRARY_ID, type LvsL
 import { matchSubcircuit } from "../assistant/lvsMatch.js";
 import { dedupeCells } from "../assistant/lvsDedup.js";
 import { pendingVisionRequests } from "../assistant/visionTool.js";
+import { executeSpiceSimTool, type SpiceSimToolArgs } from "../assistant/spiceSimTool.js";
 
 /**
  * The assistant router is intentionally read-only. It validates the current
@@ -369,5 +370,138 @@ export function createAssistantRouter(config: { dataRoot: string }) {
     response.json({ ok: true });
   });
 
+  // ── SPICE simulation chat ────────────────────────────────────────
+  // Simple LLM chat for generating ngspice testbench directives.
+  // The LLM receives the netlist + user prompt and returns directives.
+
+  router.post("/api/dies/:dieId/assistant/spice-chat", async (request, response) => {
+    try {
+      const body = (request.body ?? {}) as { netlist?: string; prompt?: string; history?: Array<{ role: string; content: string }>; llmConfig?: { provider?: string; apiKey?: string; baseUrl?: string; model?: string } };
+      if (!body.prompt) {
+        response.status(400).json({ ok: false, error: "prompt is required" });
+        return;
+      }
+
+      // Use client-provided llmConfig (from SettingsPanel) with env fallback
+      const usingOpenRouter = Boolean(body.llmConfig?.apiKey || process.env.OPENROUTER_API_KEY);
+      const apiKey = body.llmConfig?.apiKey || process.env.ASSISTANT_LLM_API_KEY || process.env.OPENROUTER_API_KEY;
+      const baseUrl = body.llmConfig?.baseUrl || process.env.ASSISTANT_LLM_BASE_URL || (usingOpenRouter ? "https://openrouter.ai/api/v1" : undefined);
+      const model = body.llmConfig?.model || process.env.ASSISTANT_LLM_MODEL || (usingOpenRouter ? "minimax/minimax-m3:free" : undefined);
+
+      if (!apiKey || !baseUrl || !model) {
+        response.status(400).json({ ok: false, error: "LLM not configured. Set provider settings in Settings panel or environment variables." });
+        return;
+      }
+
+      const systemPrompt = `You are an expert SPICE simulation engineer. You generate testbench directives for ngspice.
+
+CRITICAL RULES:
+- The DUT (device under test) is ALREADY connected in the netlist as X1. DO NOT include the .subckt definition, .model cards, or any DUT-internal components.
+- Your output should contain ONLY the testbench: voltage/current sources, loads, analysis commands, and output commands.
+- The subcircuit port order is: X1 GND_1 net230 ref VDD GND bandgap (match the .subckt definition)
+
+YOUR OUTPUT MUST INCLUDE (in this order):
+1. Voltage/current sources (VDD, input sources, ground references)
+2. Subcircuit instantiation (X1 ports subcktname)
+3. Load components (resistors, capacitors)
+4. Analysis directives (.dc, .tran, .ac, .op)
+5. Output directives (.print, .control/.endc if needed)
+6. .end
+
+DO NOT output:
+- .model cards (already included automatically)
+- .subckt/.ends blocks (DUT is provided separately)
+- Any device inside the DUT
+
+Example of CORRECT output:
+VDD VDD 0 DC 3.3
+X1 GND_1 net230 ref VDD GND bandgap
+Rload ref 0 10k
+.dc VDD 0 5 0.01
+.print dc V(ref) V(net230) I(VDD)
+.end
+
+Example of WRONG output (DO NOT DO THIS):
+.subckt bandgap ...
+Q10 ...
+.model npn NPN ...
+... (all DUT internals)
+VDD VDD 0 DC 3.3
+.end`;
+
+      const messages: unknown[] = [
+        { role: "system", content: systemPrompt },
+      ];
+
+      // Add conversation history
+      if (Array.isArray(body.history)) {
+        for (const msg of body.history.slice(-10)) {
+          messages.push({ role: msg.role, content: msg.content });
+        }
+      }
+
+      // Add current prompt with netlist context
+      let userMessage = body.prompt;
+      if (body.netlist) {
+        userMessage = `Current netlist:\n\`\`\`spice\n${body.netlist}\n\`\`\`\n\nRequest: ${body.prompt}`;
+      }
+      messages.push({ role: "user", content: userMessage });
+
+      const { streamChatCompletion } = await import("../assistant/llmStream.js");
+      const result = await streamChatCompletion({
+        baseUrl, apiKey, model,
+        messages,
+        maxTokens: 4000,
+        timeoutMs: 60_000,
+      });
+
+      // Extract directives from response (same logic as frontend)
+      const directives = extractSpiceDirectives(result.content);
+
+      response.json({ ok: true, content: result.content, directives });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown LLM error";
+      console.error(`[assistant/spice-chat] failed: ${reason}`);
+      response.status(502).json({ ok: false, error: `Spice chat failed: ${reason}` });
+    }
+  });
+
+  // ── Server-side ngspice run endpoint ───────────────────────
+  router.post("/api/ngspice/run", async (request, response) => {
+    try {
+      const body = (request.body ?? {}) as SpiceSimToolArgs;
+      if (!body.netlist && !body.subcircuit && !body.directives) {
+        response.status(400).json({ ok: false, error: "Provide netlist, or subcircuit + directives." });
+        return;
+      }
+      const { result, rawData, varTypes, dataColumns } = await executeSpiceSimTool(body);
+      response.json({ ok: result.success, ...result, rawData, varTypes, dataColumns });
+    } catch (error) {
+      const reason = error instanceof Error ? error.message : "Unknown error";
+      console.error(`[ngspice/run] failed: ${reason}`);
+      response.status(500).json({ ok: false, error: reason });
+    }
+  });
+
   return router;
+}
+
+/**
+ * Extract SPICE directives from LLM response text.
+ * Matches: code blocks, device instances (.model, V*, I*, R*, X*, etc.)
+ */
+function extractSpiceDirectives(text: string): string | null {
+  const codeBlock = text.match(/```(?:spice|ngspice)?\s*\n([\s\S]*?)```/i);
+  if (codeBlock) return codeBlock[1].trim();
+
+  const lines = text.split("\n");
+  const spiceLines: string[] = [];
+  for (const line of lines) {
+    const t = line.trim();
+    if (!t) continue;
+    if (t.startsWith("*") || t.startsWith("//")) { spiceLines.push(t); continue; }
+    if (/^\.[a-zA-Z]/.test(t)) { spiceLines.push(t); continue; }
+    if (/^[A-Za-z][A-Za-z0-9_]*\s/.test(t)) { spiceLines.push(t); continue; }
+  }
+  return spiceLines.length > 0 ? spiceLines.join("\n") : null;
 }

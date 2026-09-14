@@ -85,6 +85,9 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
   const [openThreadId, setOpenThreadId] = useState<string | null>(null);
   const [lvsEnabled, setLvsEnabled] = useState(true);
   const [visionEnabled, setVisionEnabled] = useState(true);
+  const [spiceEnabled, setSpiceEnabled] = useState(true);
+  const ngspicePath = usePreferences((state) => state.ngspicePath);
+  const ngspiceMode = usePreferences((state) => state.ngspiceMode);
   const [lvsOpen, setLvsOpen] = useState(false);
   const [lvsResult, setLvsResult] = useState<AssistantLvsCheckResponse["data"] | null>(null);
   const [lvsError, setLvsError] = useState<string | null>(null);
@@ -494,6 +497,10 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           <input type="checkbox" checked={visionEnabled} onChange={(event) => setVisionEnabled(event.target.checked)} />
           <span>Allow the model to visually inspect device crops (mmochip_vision)</span>
         </label>
+        <label style={{ display: "flex", gap: 6, alignItems: "center", color: "var(--ink2)", fontSize: 10 }}>
+          <input type="checkbox" checked={spiceEnabled} onChange={(event) => setSpiceEnabled(event.target.checked)} />
+          <span>Allow the model to run ngspice simulations (mmochip_spice_sim)</span>
+        </label>
         <label style={{ display: "grid", gap: 3 }}>
           <span style={{ color: "var(--ink3)", fontSize: 10 }}>Clarifying questions before analysis</span>
           <select
@@ -707,6 +714,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
           llmProvider={llmProvider}
           lvsEnabled={lvsEnabled}
           visionEnabled={visionEnabled}
+          spiceEnabled={spiceEnabled}
           overlayLayers={overlayLayers}
           onClose={() => setOpenThreadId(null)}
         />,
@@ -912,6 +920,7 @@ function DiscussPopup({
   llmProvider,
   lvsEnabled,
   visionEnabled,
+  spiceEnabled,
   overlayLayers,
   onClose,
 }: {
@@ -924,12 +933,15 @@ function DiscussPopup({
   llmProvider: AssistantLlmConfig;
   lvsEnabled: boolean;
   visionEnabled: boolean;
+  spiceEnabled: boolean;
   overlayLayers: Array<{ id: string; name: string }>;
   onClose: () => void;
 }) {
   const thread = useAssistantSession((state) => state.byDieId[dieId]?.findingThreads?.[finding.id] ?? EMPTY_THREAD);
   const session = useAssistantSession((state) => state.byDieId[dieId]);
   const assistantDataFlags = usePreferences((state) => state.assistantDataFlags);
+  const ngspicePath = usePreferences((state) => state.ngspicePath);
+  const ngspiceMode = usePreferences((state) => state.ngspiceMode);
   const appendMessage = useAssistantSession((state) => state.appendFindingMessage);
   const resetThread = useAssistantSession((state) => state.resetFindingThread);
   const updateFinding = useAssistantSession((state) => state.updateFinding);
@@ -1051,7 +1063,12 @@ function DiscussPopup({
         brief: session?.brief,
         mode: session?.mode,
         llmConfig: llmProvider,
-        toolFlags: (lvsEnabled || visionEnabled) ? { lvs: lvsEnabled, vision: visionEnabled } : undefined,
+        toolFlags: {
+          lvs: lvsEnabled,
+          vision: visionEnabled,
+          spice: spiceEnabled,
+          ngspicePath: ngspiceMode === "server" ? ngspicePath : undefined,
+        },
         overlayLayers,
         assistantDataFlags,
       }, {

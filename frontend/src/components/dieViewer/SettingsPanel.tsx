@@ -38,6 +38,11 @@ type Props = {
   // Full-graph hypothesis count limit
   assistantMaxHypotheses: number;
   setAssistantMaxHypotheses: (count: number) => void;
+  // ngspice settings
+  ngspiceMode: "wasm" | "server";
+  setNgspiceMode: (v: "wasm" | "server") => void;
+  ngspicePath: string;
+  setNgspicePath: (v: string) => void;
 };
 
 const LLM_PRESETS: Record<string, { baseUrl: string; model: string }> = {
@@ -90,6 +95,8 @@ export function SettingsPanel({
   llmProvider, setLlmProvider,
   assistantDataFlags, setAssistantDataFlags,
   assistantMaxHypotheses, setAssistantMaxHypotheses,
+  ngspiceMode, setNgspiceMode,
+  ngspicePath, setNgspicePath,
 }: Props) {
   const backdropRef = useRef<HTMLDivElement>(null);
 
@@ -301,6 +308,48 @@ export function SettingsPanel({
               <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4, marginTop: 4 }}>
                 Limit on the number of hypothesis cards returned by full-graph analysis (reduces output tokens and cost).
               </div>
+            </div>
+          </div>
+        </div>
+
+        {/* ngspice Settings */}
+        <div>
+          <div
+            style={{
+              fontSize: 10, fontWeight: 600, color: "var(--ink3)",
+              textTransform: "uppercase", letterSpacing: 0.5, marginBottom: 8,
+            }}
+          >
+            ngspice Simulation
+          </div>
+          <div style={{ display: "flex", flexDirection: "column", gap: 6 }}>
+            <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+              <label style={{ ...labelStyle, flex: 1 }}>Mode</label>
+              <select
+                value={ngspiceMode}
+                onChange={(e) => setNgspiceMode(e.target.value as "wasm" | "server")}
+                style={{ ...inputStyle, width: 120, flex: "none" }}
+              >
+                <option value="wasm">WASM (in-browser)</option>
+                <option value="server">Server-side</option>
+              </select>
+            </div>
+            {ngspiceMode === "server" && (
+              <div style={{ display: "flex", gap: 8, alignItems: "center" }}>
+                <label style={{ ...labelStyle, flex: 1 }}>ngspice path</label>
+                <input
+                  type="text"
+                  value={ngspicePath}
+                  onChange={(e) => setNgspicePath(e.target.value)}
+                  placeholder="ngspice"
+                  style={{ ...inputStyle, flex: 1 }}
+                />
+              </div>
+            )}
+            <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.4 }}>
+              {ngspiceMode === "wasm"
+                ? "Runs ngspice in-browser via WebAssembly (eecircuit-engine). Fast, no server needed, but some directives like .step may not be supported."
+                : "Runs native ngspice on the server. Full feature support including .step, .param, .measure. Requires ngspice installed on the server."}
             </div>
           </div>
         </div>

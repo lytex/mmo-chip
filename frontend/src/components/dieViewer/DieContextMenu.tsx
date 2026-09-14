@@ -23,6 +23,8 @@ export interface DieContextMenuState {
   multiPointCount: number;
   /** If the right-click landed on a cell instance, its id. */
   hitCellId?: string;
+  /** Annotation part id under the cursor, e.g. `net:id/edge:edgeId`. */
+  hitPartId?: string;
   /** If the right-click landed on a ruler, its id. */
   hitRulerId?: string;
 }
@@ -34,6 +36,10 @@ interface Props {
   onStartMultiWire: () => void;
   onCopyCell?: () => void;
   onPasteCell?: () => void;
+  onCopyNet?: () => void;
+  onPasteNet?: () => void;
+  hasWireClipboard?: boolean;
+  hasCellClipboard?: boolean;
   onMakeUnique?: () => void;
   onDeleteRuler?: () => void;
   onSetScaleFromRuler?: () => void;
@@ -49,6 +55,10 @@ export function DieContextMenu({
   onStartMultiWire,
   onCopyCell,
   onPasteCell,
+  onCopyNet,
+  onPasteNet,
+  hasWireClipboard,
+  hasCellClipboard,
   onMakeUnique,
   onDeleteRuler,
   onSetScaleFromRuler
@@ -132,11 +142,28 @@ export function DieContextMenu({
           </button>
         </>
       )}
-      {!menu.hitCellId && onPasteCell && (
+      {!menu.hitCellId && onCopyNet && menu.hitPartId?.startsWith("net:") && (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => { onCopyNet(); onClose(); }}>
+            Copy Wire <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+C</span>
+          </button>
+        </>
+      )}
+      {!menu.hitCellId && onPasteCell && (hasCellClipboard || hasWireClipboard) && (
         <>
           <div className="menu-sep" />
           <button className="menu-item" onClick={() => { onPasteCell(); onClose(); }}>
-            Paste Cell  <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>⌘V</span>
+            {hasCellClipboard && hasWireClipboard ? "Paste Selection" : "Paste Cell"}
+            <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+V</span>
+          </button>
+        </>
+      )}
+      {!menu.hitCellId && onPasteNet && hasWireClipboard && !hasCellClipboard && (
+        <>
+          <div className="menu-sep" />
+          <button className="menu-item" onClick={() => { onPasteNet(); onClose(); }}>
+            Paste Wire <span style={{ marginLeft: "auto", color: "var(--ink3)" }}>Ctrl+V</span>
           </button>
         </>
       )}

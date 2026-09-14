@@ -3,41 +3,52 @@
  *
  * Works across Die Viewer, Merge Cells, and RE Cell.
  *
- *   Ctrl+Shift+B    — toggle base image visibility
+ *   Space+B         — toggle base image visibility
  *   ]               — show only the NEXT overlay layer (N+1), hide others
  *   [               — show only the PREVIOUS overlay layer (N-1), hide others
- *   Ctrl+Shift+1..8 — show only overlay layer #1..#8, hide others
+ *   Space+1..8      — show only overlay layer #1..#8, hide others; repeat to hide it
  */
 
 import { useEffect } from "react";
 import { useOverlayLayers } from "../state/overlayLayers";
 
-export function useOverlayHotkeys(): void {
+export function useOverlayHotkeys(onToggleBaseImage?: () => void): void {
   useEffect(() => {
+    let spaceHeld = false;
     const onKeyDown = (e: KeyboardEvent) => {
       // Don't fire when the user is typing in an input.
       const tag = (e.target as HTMLElement)?.tagName;
       if (tag === "INPUT" || tag === "TEXTAREA" || tag === "SELECT") return;
+      if (e.code === "Space") {
+        spaceHeld = true;
+        return;
+      }
 
       const layers = useOverlayLayers.getState().layers;
       const ctrl = e.ctrlKey || e.metaKey;
       const shift = e.shiftKey;
+      const space = spaceHeld;
 
-      // Ctrl+Shift+B → toggle base image
-      if (ctrl && shift && e.key.toLowerCase() === "b") {
+      // Space+B → toggle base image
+      if (space && !ctrl && !shift && !e.altKey && e.key.toLowerCase() === "b") {
         e.preventDefault();
-        useOverlayLayers.getState().toggleBaseImage();
+        if (onToggleBaseImage) onToggleBaseImage();
+        else useOverlayLayers.getState().toggleBaseImage();
         return;
       }
 
-      // Ctrl+Shift+1..8 → show only layer N, hide all others
-      if (ctrl && shift && e.code >= "Digit1" && e.code <= "Digit8") {
+      // Space+1..8 → show only layer N, hide all others; repeat when it is the
+      // only visible layer to hide it.
+      if (space && !ctrl && !shift && !e.altKey && e.code >= "Digit1" && e.code <= "Digit8") {
         e.preventDefault();
         const digits = ["Digit1","Digit2","Digit3","Digit4","Digit5","Digit6","Digit7","Digit8"];
         const idx = digits.indexOf(e.code);
         const { layers } = useOverlayLayers.getState();
+        if (idx >= layers.length) return;
+        const targetAlreadySolo = !layers[idx].hidden &&
+          layers.every((layer, layerIdx) => layerIdx === idx || layer.hidden);
         for (let i = 0; i < layers.length; i++) {
-          const hidden = i !== idx;
+          const hidden = targetAlreadySolo ? true : i !== idx;
           if (layers[i].hidden !== hidden) {
             useOverlayLayers.getState().setLayerHidden(layers[i].id, hidden);
           }
@@ -46,7 +57,7 @@ export function useOverlayHotkeys(): void {
       }
 
       // ] → show only the next overlay (N+1), hide all others
-      if (e.key === "]" && !ctrl && !shift && !e.altKey) {
+      if (e.key === "]" && !ctrl && !space && !shift && !e.altKey) {
         e.preventDefault();
         const { layers } = useOverlayLayers.getState();
         if (layers.length === 0) return;
@@ -65,7 +76,7 @@ export function useOverlayHotkeys(): void {
       }
 
       // [ → show only the previous overlay (N-1), hide all others
-      if (e.key === "[" && !ctrl && !shift && !e.altKey) {
+      if (e.key === "[" && !ctrl && !space && !shift && !e.altKey) {
         e.preventDefault();
         const { layers } = useOverlayLayers.getState();
         if (layers.length === 0) return;
@@ -82,8 +93,18 @@ export function useOverlayHotkeys(): void {
         return;
       }
     };
+    const onKeyUp = (e: KeyboardEvent) => {
+      if (e.code === "Space") spaceHeld = false;
+    };
+    const onBlur = () => { spaceHeld = false; };
 
     window.addEventListener("keydown", onKeyDown);
-    return () => window.removeEventListener("keydown", onKeyDown);
-  }, []);
+    window.addEventListener("keyup", onKeyUp);
+    window.addEventListener("blur", onBlur);
+    return () => {
+      window.removeEventListener("keydown", onKeyDown);
+      window.removeEventListener("keyup", onKeyUp);
+      window.removeEventListener("blur", onBlur);
+    };
+  }, [onToggleBaseImage]);
 }

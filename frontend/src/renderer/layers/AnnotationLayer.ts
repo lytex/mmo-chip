@@ -75,6 +75,10 @@ export interface Annotation {
   hitTest?(worldPoint: { x: number; y: number }, worldTolerance: number): string | null;
   /** Narrow-phase rect-pick (marquee). */
   intersectsRect?(worldRect: Rect): boolean;
+  /** Selection ids contributed by a marquee. Composite annotations can return
+   *  sub-part ids (for example individual net edges); simple annotations
+   *  return their own id. */
+  rectPickParts?(worldRect: Rect, fullyContained: boolean): string[];
 }
 
 interface IndexEntry {
@@ -279,7 +283,7 @@ export class AnnotationLayer implements Layer {
    * annotation's `intersectsRect` (falls back to bbox overlap). Visibility
    * filter is respected.
    */
-  queryRect(worldRect: Rect): Annotation[] {
+  queryRect(worldRect: Rect, fullyContained = false): Annotation[] {
     const candidates = this.index.search({
       minX: worldRect.x,
       minY: worldRect.y,
@@ -292,9 +296,47 @@ export class AnnotationLayer implements Layer {
     for (const c of candidates) {
       const a = c.annotation;
       if (visible && !visible.has(a.kind)) continue;
-      if (hidden && hidden.has(a.id)) continue;
+      if (
+        fullyContained &&
+        !a.rectPickParts &&
+        (
+          a.bbox.x < worldRect.x ||
+          a.bbox.y < worldRect.y ||
+          a.bbox.x + a.bbox.width > worldRect.x + worldRect.width ||
+          a.bbox.y + a.bbox.height > worldRect.y + worldRect.height
+        )
+      ) continue;
       const hit = a.intersectsRect ? a.intersectsRect(worldRect) : true; // bbox already overlapped
       if (hit) out.push(a);
+    }
+    return out;
+  }
+
+  /** Rect-pick selection ids, preserving sub-parts for composite annotations. */
+  queryRectParts(worldRect: Rect, fullyContained = false): string[] {
+    const candidates = this.index.search({
+      minX: worldRect.x,
+      minY: worldRect.y,
+      maxX: worldRect.x + worldRect.width,
+      maxY: worldRect.y + worldRect.height
+    });
+    const visible = this.visibleKinds;
+    const out: string[] = [];
+    for (const c of candidates) {
+      const a = c.annotation;
+      if (visible && !visible.has(a.kind)) continue;
+      if (
+        fullyContained &&
+        !a.rectPickParts &&
+        (
+          a.bbox.x < worldRect.x ||
+          a.bbox.y < worldRect.y ||
+          a.bbox.x + a.bbox.width > worldRect.x + worldRect.width ||
+          a.bbox.y + a.bbox.height > worldRect.y + worldRect.height
+        )
+      ) continue;
+      if (a.rectPickParts) out.push(...a.rectPickParts(worldRect, fullyContained));
+      else if (!a.intersectsRect || a.intersectsRect(worldRect)) out.push(a.id);
     }
     return out;
   }

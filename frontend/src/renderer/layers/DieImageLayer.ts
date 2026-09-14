@@ -1,4 +1,4 @@
-import type { DieMetadata } from "shared";
+import type { DieMetadata, DieTransform } from "shared";
 import type { Rect } from "../../lib/geometry";
 import type { Layer, TileBounds } from "../types";
 
@@ -36,6 +36,9 @@ export interface DieImageDisplay {
   getHidden?: () => boolean;
   /** 0..1 multiplier applied to the painted image. */
   getOpacity?: () => number;
+  /** Rotation+mirror applied to the entire image (die-image-pixel space).
+   *  Image is treated as anchored at its center. Return null/undefined to skip. */
+  getTransform?: () => DieTransform | null;
 }
 
 export class DieImageLayer implements Layer {
@@ -48,6 +51,9 @@ export class DieImageLayer implements Layer {
   /** Reused scratch canvas for opacity compositing (tiles render serially, so
    *  one is safe). Lazily created / resized to the tile's device size. */
   private scratch: HTMLCanvasElement | null = null;
+  /** Scratch canvas for rotated image rendering — full source image drawn
+   *  once, then blitted with rotation. Avoids per-tile clipping artifacts. */
+  private scratchRotated: HTMLCanvasElement | null = null;
 
   constructor(metadata: DieMetadata, display: DieImageDisplay = {}) {
     this.metadata = metadata;
@@ -65,15 +71,21 @@ export class DieImageLayer implements Layer {
     if (this.display.getHidden?.()) return;
     const opacity = this.display.getOpacity?.() ?? 1;
     if (opacity <= 0) return;
+    const transform = this.display.getTransform?.() ?? null;
+    const isRotated = !!transform && (transform.rotationDeg !== 0 || transform.mirrorX || transform.mirrorY);
+
+    // When the image is rotated, per-tile rendering clips the rotated content
+    // because each tile canvas is only 256×256 CSS pixels.  Render the full
+    // source image into a scratch canvas first, then blit it with the rotation
+    // transform applied — avoids tile-boundary artifacts entirely.
+    if (isRotated) {
+      this.drawRotated(ctx, bounds, transform, opacity);
+      return;
+    }
 
     const { world, zoom } = bounds;
     const targetLevel = this.pickLevel(zoom);
 
-    // Progressive enhancement: draw every coarser level whose tiles we already
-    // have in cache, then overdraw the target level. This means there's always
-    // some content visible while finer tiles are still loading — no black
-    // flash when zooming in. We only fire network requests for the target
-    // level, so coarser levels are pure-cache reads.
     const drawPyramid = (g: CanvasRenderingContext2D) => {
       for (let level = 0; level < targetLevel; level++) {
         this.drawLevel(g, level, world, false);
@@ -87,10 +99,6 @@ export class DieImageLayer implements Layer {
       return;
     }
 
-    // Partial opacity: the pyramid stacks several semi-transparent levels, so
-    // applying `globalAlpha` per `drawImage` would compound (more so the more
-    // zoomed-in we are — more coarse levels underneath). Composite the whole
-    // pyramid opaque into a scratch canvas, then blit it once at `opacity`.
     const px = Math.max(1, Math.round(bounds.size * bounds.dpr));
     let scratch = this.scratch;
     if (!scratch) scratch = this.scratch = document.createElement("canvas");
@@ -100,8 +108,6 @@ export class DieImageLayer implements Layer {
     }
     const sctx = scratch.getContext("2d");
     if (!sctx) {
-      // No 2D context for the scratch canvas — fall back to the (slightly
-      // zoom-dependent) direct path rather than drawing nothing.
       ctx.save();
       ctx.globalAlpha = opacity;
       drawPyramid(ctx);
@@ -110,8 +116,6 @@ export class DieImageLayer implements Layer {
       return;
     }
 
-    // Mirror the tile transform (see TiledRenderer.renderTile) so world-space
-    // drawing lands in the same pixels as the real tile canvas.
     sctx.setTransform(1, 0, 0, 1, 0, 0);
     sctx.clearRect(0, 0, px, px);
     sctx.scale(bounds.dpr * zoom, bounds.dpr * zoom);
@@ -119,9 +123,89 @@ export class DieImageLayer implements Layer {
     drawPyramid(sctx);
 
     ctx.save();
-    ctx.setTransform(1, 0, 0, 1, 0, 0); // blit 1:1 in device pixels
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
     ctx.globalAlpha = opacity;
     ctx.drawImage(scratch, 0, 0);
+    ctx.restore();
+
+    this.evictIfNeeded();
+  }
+
+  /** Axis-aligned bbox of a point rotated with the given transform. */
+  private static rotateCorner(
+    px: number, py: number,
+    cx: number, cy: number,
+    t: DieTransform
+  ): { x: number; y: number } {
+    let x = px - cx;
+    let y = py - cy;
+    if (t.mirrorX) x = -x;
+    if (t.mirrorY) y = -y;
+    const rad = (t.rotationDeg * Math.PI) / 180;
+    const rx = x * Math.cos(rad) - y * Math.sin(rad);
+    const ry = x * Math.sin(rad) + y * Math.cos(rad);
+    return { x: rx + cx, y: ry + cy };
+  }
+
+  /**
+   * Renders the full source image with rotation into a scratch canvas, then
+   * blits it to the main canvas.  This avoids the per-tile clipping artifact
+   * where rotated content extends beyond the 256×256 tile canvas bounds.
+   */
+  private drawRotated(
+    ctx: CanvasRenderingContext2D,
+    bounds: TileBounds,
+    transform: DieTransform,
+    opacity: number
+  ): void {
+    const meta = this.metadata;
+    const { world, zoom, dpr } = bounds;
+    const imgW = meta.width;
+    const imgH = meta.height;
+    const cx = imgW / 2;
+    const cy = imgH / 2;
+
+    // Compute the axis-aligned bbox of the rotated image in world coords.
+    const c0 = DieImageLayer.rotateCorner(0, 0, cx, cy, transform);
+    const c1 = DieImageLayer.rotateCorner(imgW, 0, cx, cy, transform);
+    const c2 = DieImageLayer.rotateCorner(0, imgH, cx, cy, transform);
+    const c3 = DieImageLayer.rotateCorner(imgW, imgH, cx, cy, transform);
+    const bboxMinX = Math.min(c0.x, c1.x, c2.x, c3.x);
+    const bboxMinY = Math.min(c0.y, c1.y, c2.y, c3.y);
+    const bboxMaxX = Math.max(c0.x, c1.x, c2.x, c3.x);
+    const bboxMaxY = Math.max(c0.y, c1.y, c2.y, c3.y);
+
+    const scratchW = Math.max(1, Math.ceil((bboxMaxX - bboxMinX) * dpr * zoom));
+    const scratchH = Math.max(1, Math.ceil((bboxMaxY - bboxMinY) * dpr * zoom));
+
+    let scratch = this.scratchRotated;
+    if (!scratch) scratch = this.scratchRotated = document.createElement("canvas");
+    if (scratch.width !== scratchW || scratch.height !== scratchH) {
+      scratch.width = scratchW;
+      scratch.height = scratchH;
+    }
+    const sctx = scratch.getContext("2d");
+    if (!sctx) return;
+
+    sctx.setTransform(1, 0, 0, 1, 0, 0);
+    sctx.clearRect(0, 0, scratchW, scratchH);
+
+    // Draw the full source pyramid into the scratch canvas at original
+    // (unrotated) positions, offset by (-bboxMinX, -bboxMinY) so the rotated
+    // bbox origin aligns with (0,0).
+    sctx.scale(dpr * zoom, dpr * zoom);
+    sctx.translate(-bboxMinX, -bboxMinY);
+    for (let level = 0; level < meta.levels.length; level++) {
+      this.drawLevel(sctx, level, { x: 0, y: 0, width: imgW, height: imgH }, level < meta.levels.length - 1);
+    }
+
+    // Blit the scratch canvas to the main canvas.
+    ctx.save();
+    ctx.setTransform(1, 0, 0, 1, 0, 0);
+    if (opacity < 1) ctx.globalAlpha = opacity;
+    const devX = (bboxMinX - world.x) * dpr * zoom;
+    const devY = (bboxMinY - world.y) * dpr * zoom;
+    ctx.drawImage(scratch, Math.round(devX), Math.round(devY));
     ctx.restore();
 
     this.evictIfNeeded();

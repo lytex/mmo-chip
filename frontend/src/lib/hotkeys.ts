@@ -113,6 +113,17 @@ export const MERGE_HOTKEYS: Record<string, MergeModeId> = {
   "Alt+5": "candidate",
 };
 
+// ── Pin Planner (IC Package) tool hotkeys ────────────────────────
+// Bare keys switch the active editor tool. Stored here so the keyboard
+// handler and the ShortcutsPanel helper both read the same mapping.
+export type PinPlannerToolId = "pan" | "name" | "bond";
+
+export const PIN_PLANNER_HOTKEYS: Record<string, PinPlannerToolId> = {
+  "s": "pan",
+  "t": "name",   // text — click a package pin to name it
+  "w": "bond",   // wire/bond — click pin, then die pad
+};
+
 // ── Analog Netlist (Netlist page) hotkeys ───────────────────────
 export type AnalogNetlistAction =
   | "toggleGraph"      // G — switch between Code / Graph views
@@ -173,8 +184,8 @@ export const DIE_VIEWER_MOD_HOTKEYS: Record<string, {
 };
 
 // ── Overlay hotkeys (shared across Die viewer / Merge / RE Cell) ─
-//   Ctrl+Shift+B    — toggle base image visibility
+//   Space+B         — toggle base image visibility
 //   ]               — cycle to next overlay (toggle on/off)
 //   [               — cycle to previous overlay (toggle on/off)
-//   Ctrl+Shift+1..8 — toggle overlay layer #1..#8 directly
+//   Space+1..8       — show only overlay layer #1..#8; repeat to hide it
 // These are handled by the `useOverlayHotkeys()` hook.

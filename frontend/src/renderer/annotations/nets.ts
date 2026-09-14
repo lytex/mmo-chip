@@ -253,6 +253,19 @@ export function buildNetAnnotation(
         if (segmentIntersectsRect(a, b, r)) return true;
       }
       return false;
+    },
+    rectPickParts(r, fullyContained) {
+      const picked: string[] = [];
+      for (const e of net.edges) {
+        const a = nodeIndex.get(e.from);
+        const b = nodeIndex.get(e.to);
+        if (!a || !b) continue;
+        const hit = fullyContained
+          ? pointInRect(a, r) && pointInRect(b, r)
+          : segmentIntersectsRect(a, b, r);
+        if (hit) picked.push(edgeSubId(e.id));
+      }
+      return picked;
     }
   };
 }

@@ -83,11 +83,11 @@ export function SchematicViewPanel({
   const betweenLayers = usePreferences((s) => s.netlistBetweenLayers);
   const edgeEdge = usePreferences((s) => s.netlistEdgeEdge);
   const edgeNode = usePreferences((s) => s.netlistEdgeNode);
-  const mergeEdges = usePreferences((s) => s.netlistMergeEdges);
   const favorStraightEdges = usePreferences((s) => s.netlistFavorStraightEdges);
   const showIoPins = usePreferences((s) => s.netlistShowIoPins);
   const showHierarchy = usePreferences((s) => s.netlistShowHierarchy);
   const showLegacyStatic = usePreferences((s) => s.netlistShowLegacyStatic);
+  const dragMode = usePreferences((s) => s.netlistDragMode);
   const {
     setNetlistLayoutStrategy: setLayoutStrategy,
     setNetlistLayoutDirection: setLayoutDirection,
@@ -96,14 +96,20 @@ export function SchematicViewPanel({
     setNetlistBetweenLayers: setBetweenLayers,
     setNetlistEdgeEdge: setEdgeEdge,
     setNetlistEdgeNode: setEdgeNode,
-    setNetlistMergeEdges: setMergeEdges,
     setNetlistFavorStraightEdges: setFavorStraightEdges,
     setNetlistShowIoPins: setShowIoPins,
     setNetlistShowHierarchy: setShowHierarchy,
     setNetlistShowLegacyStatic: setShowLegacyStatic,
+    setNetlistDragMode: setDragMode,
   } = usePreferences.getState();
 
   const n2sRef = useRef<Netlist2SvgHandle>(null);
+
+  // Auto-disable hierarchy when a subcircuit is selected — hierarchy only
+  // makes sense on the "All" view.
+  useEffect(() => {
+    if (selectedDeviceNames.length > 0 && showHierarchy) setShowHierarchy(false);
+  }, [selectedDeviceNames, showHierarchy]);
 
   // ══ Generate spice-ts views ═══════════════════════════════════
   const views = useMemo(
@@ -233,6 +239,9 @@ export function SchematicViewPanel({
     [views.perRegion],
   );
   const [internalRegion, setInternalRegion] = useState<string | null>(null);
+  // When the parent's selectedRegion prop changes, clear internal state
+  // so the prop always wins (keeps SubcircuitPicker and schematic in sync).
+  useEffect(() => { setInternalRegion(null); }, [selectedRegionProp]);
   const activeRegion = selectedRegionProp ?? internalRegion;
 
   // ── Download handler (netlist2svg only) ──────────────────────
@@ -342,6 +351,7 @@ useEffect(() => {
   const hierarchyBlocks: HierarchyBlock[] | undefined = useMemo(() => {
     if (isManual) return undefined;
     if (!showHierarchy) return undefined;
+    if (selectedDeviceNames.length > 0) return undefined; // hierarchy only on "All"
     if (!hierarchical || !floorplanRegions || floorplanRegions.length === 0) return undefined;
     if (!n2sData.floorplanDevices) return undefined;
     const regionDevices = new Map<string, AnalogDevice[]>();
@@ -364,6 +374,62 @@ useEffect(() => {
       regionNames,
     );
   }, [isManual, showHierarchy, hierarchical, floorplanRegions, n2sData, spiceConfig]);
+
+  // ── Region boundary pins (shown when viewing a subcircuit) ─────
+  // When a region is selected (subcircuit view) and hierarchy overview is off,
+  // compute the block's external nets so InteractiveAnalogSchematic can render
+  // them as labeled pins at the canvas edges (inputs left, outputs right).
+  // Works for both floorplan regions AND device subsets (AI/netlist subcircuits).
+  const regionPins: HierarchyBlock["nets"] | undefined = useMemo(() => {
+    if (showHierarchy) return undefined; // hierarchy view shows full blocks
+    if (!hierarchical) return undefined;
+    // Determine which devices are currently displayed
+    let displayedDevices: AnalogDevice[] | undefined;
+    if (selectedDeviceNames.length > 0) {
+      // Device subset selected (AI/netlist subcircuit from picker)
+      displayedDevices = n2sData.devices.filter((d) => selectedDeviceNames.includes(d.instanceName ?? d.id));
+    } else if (activeRegion && n2sData.floorplanDevices) {
+      // Floorplan region selected
+      displayedDevices = n2sData.floorplanDevices.get(activeRegion);
+    }
+    if (!displayedDevices || displayedDevices.length === 0) return undefined;
+    // Compute boundary nets: nets used by displayed devices that also appear
+    // in other devices or are die I/O pins.
+    const cfg: SpiceConfig = { vdd: "VDD", gnd: "GND", ...spiceConfig };
+    const vdd = cfg.vdd ?? "VDD";
+    const gnd = cfg.gnd ?? "GND";
+    const displayedDeviceKeys = new Set(displayedDevices.map((d) => d.instanceName ?? d.id));
+    const displayedNetIds = new Set<number>();
+    for (const d of displayedDevices) for (const t of d.terminals) if (t.netId >= 0) displayedNetIds.add(t.netId);
+    // Nets used by devices OUTSIDE the selection
+    const externalNetIds = new Set<number>();
+    for (const d of n2sData.devices) {
+      if (displayedDeviceKeys.has(d.instanceName ?? d.id)) continue;
+      for (const t of d.terminals) if (t.netId >= 0) externalNetIds.add(t.netId);
+    }
+    const nets: HierarchyBlock["nets"] = [];
+    for (const netId of displayedNetIds) {
+      const name = n2sData.namedNets.get(netId);
+      if (!name) continue;
+      if (name === vdd || name === gnd) continue;
+      if (!externalNetIds.has(netId) && !n2sData.ioNetIds.has(netId)) continue;
+      // Infer direction: gate/base = input, else output
+      let hasGate = false;
+      let hasPassive = false;
+      for (const d of displayedDevices) {
+        for (const t of d.terminals) {
+          if (t.netId !== netId) continue;
+          if (d.kind === "mos" && t.name === "G") hasGate = true;
+          else if ((d.kind === "bjt_npn" || d.kind === "bjt_pnp") && t.name === "B") hasGate = true;
+          else if ((d.kind === "jfet_n" || d.kind === "jfet_p") && t.name === "G") hasGate = true;
+          else hasPassive = true;
+        }
+      }
+      const direction: "input" | "output" = hasGate && hasPassive ? "output" : hasGate ? "input" : "output";
+      nets.push({ netId, name, direction });
+    }
+    return nets.length > 0 ? nets : undefined;
+  }, [showHierarchy, hierarchical, activeRegion, selectedDeviceNames, n2sData, spiceConfig]);
 
   // ── Interactive engine data (draggable canvas) ────────────────
   // Scope slot keeps layouts of different datasets (full / region /
@@ -390,14 +456,23 @@ useEffect(() => {
     return n2sData.devices;
   }, [isManual, effectiveN2s, hierarchical, activeRegion, n2sData, selectedDeviceNames]);
 
-  // I/O pin net ids: shown when the user toggles "Show I/O pins" (
-  // permission matched: assistant fragment always shows them).
-  const interactiveIoNetIds = showIoPins || selectedDeviceNames.length > 0 ? effectiveN2s.ioNetIds : undefined;
+  // I/O pin net ids:
+  // - "All" view: show all die I/O pins when the toggle is on
+  // - Subcircuit view: no die I/O pins (only block I/O pins via regionPins)
+  const interactiveIoNetIds = useMemo(() => {
+    if (selectedDeviceNames.length > 0) return undefined;
+    // When a region is selected (subcircuit view), hide die IO pins —
+    // block boundary pins (regionPins) already represent the same nets.
+    if (activeRegion && !showHierarchy) return undefined;
+    return showIoPins ? n2sData.ioNetIds : undefined;
+  }, [showIoPins, selectedDeviceNames, activeRegion, showHierarchy, n2sData.ioNetIds]);
 
-  // When hierarchy is shown, the interactive canvas lays out ONLY the
-  // top-level (unassigned) devices — region contents collapse into block
-  // nodes (passed via `blocks`).
+  // When hierarchy is shown (and no subcircuit is selected), the interactive
+  // canvas lays out ONLY the top-level (unassigned) devices — region contents
+  // collapse into block nodes (passed via `blocks`).  When a subcircuit is
+  // selected, show all its devices flat (no block filtering).
   const interactiveDevicesWithHierarchy = useMemo(() => {
+    if (selectedDeviceNames.length > 0) return interactiveDevices;
     if (!hierarchyBlocks) return interactiveDevices;
     return n2sData.devices.filter((d) =>
       !hierarchyBlocks.some((b) =>
@@ -406,7 +481,7 @@ useEffect(() => {
         ),
       ),
     );
-  }, [hierarchyBlocks, interactiveDevices, n2sData]);
+  }, [hierarchyBlocks, interactiveDevices, n2sData, selectedDeviceNames]);
 
   // ── Drilling into a hierarchy block ──────────────────────────
   // Double-click on a block (interactive hierarchy) opens that region's
@@ -514,19 +589,9 @@ useEffect(() => {
           </div>
         )}
 
-        {/* ── Tentative badge: schematic is sourced from hand-edited Code tab text ── */}
-        {isManual && (
-          <span
-            className="chip"
-            style={{ fontSize: 10, fontWeight: 600, color: "var(--accent)" }}
-            title="Rendering the netlist typed in the Code tab, not the die-extracted layout. Revert there to go back to the generated netlist."
-          >
-            ✎ tentative — from Code tab
-          </span>
-        )}
-
-        {/* ── Hierarchy toggle: show/hide floorplan region blocks ── */}
-        {!isManual && renderMode === "analog" && engine === "interactive" && (
+        {/* ── Hierarchy toggle: show/hide floorplan region blocks ──
+            Only shown in "All" view — meaningless for individual subcircuits. */}
+        {renderMode === "analog" && engine === "interactive" && !activeRegion && selectedDeviceNames.length === 0 && (
           <button
             type="button"
             className={"btn sm" + (showHierarchy ? " on" : "")}
@@ -770,10 +835,11 @@ useEffect(() => {
               betweenLayers={betweenLayers}
               edgeEdge={edgeEdge}
               edgeNode={edgeNode}
-              mergeEdges={mergeEdges}
               favorStraightEdges={favorStraightEdges}
+              dragMode={dragMode}
               blocks={hierarchyBlocks}
               onOpenBlock={handleOpenBlock}
+              regionPins={regionPins}
             />
           ) : currentN2sJson ? (
             <Netlist2SvgView ref={n2sRef} netlistJson={currentN2sJson} layoutStrategy={layoutStrategy} layoutDirection={layoutDirection} compactionLevel={compactionLevel} />
@@ -801,8 +867,6 @@ useEffect(() => {
         setEdgeEdge={setEdgeEdge}
         edgeNode={edgeNode}
         setEdgeNode={setEdgeNode}
-        mergeEdges={mergeEdges}
-        setMergeEdges={setMergeEdges}
         favorStraightEdges={favorStraightEdges}
         setFavorStraightEdges={setFavorStraightEdges}
         showIoPins={showIoPins}
@@ -811,6 +875,8 @@ useEffect(() => {
         setShowHierarchy={setShowHierarchy}
         showLegacyStatic={showLegacyStatic}
         setShowLegacyStatic={setShowLegacyStatic}
+        dragMode={dragMode}
+        setDragMode={setDragMode}
       />
     </div>
   );

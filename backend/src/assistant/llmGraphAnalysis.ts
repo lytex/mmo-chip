@@ -21,6 +21,7 @@ import type { LvsLibrary, LvsLibraryCell } from "./lvsLibrary.js";
 import { dedupeCells } from "./lvsDedup.js";
 import { matchSubcircuit } from "./lvsMatch.js";
 import { executeVisionTool } from "./visionTool.js";
+import { SPICE_SIM_TOOL, executeSpiceSimTool, type SpiceSimToolArgs, type SpiceSimToolResult } from "./spiceSimTool.js";
 import { isClientAbortError, streamWithRetries } from "./llmStream.js";
 
 /**
@@ -799,6 +800,8 @@ export async function discussFindingWithLlm(
 
   const useLvs = Boolean(toolFlags?.lvs);
   const useVision = Boolean(toolFlags?.vision);
+  const useSpice = Boolean(toolFlags?.spice);
+  const ngspicePath = toolFlags?.ngspicePath;
   // Tools are always offered: mmochip_card_update is essential for the workflow
   // (LVS/vision are optional and gated inside buildExtra). So the tool loop runs
   // even when neither LVS nor vision are enabled.
@@ -864,6 +867,7 @@ export async function discussFindingWithLlm(
     useVision
       ? `You have access to the mmochip_vision tool. CALL it to visually inspect device crops from the die image when you need to confirm a transistor type, check terminal placement, or compare similar devices. Pass the device UUIDs (from the netlist's "uuid" fields) as deviceUuids. The tool returns a cell crop image with the device name and terminal labels (C/B/E or D/G/S) drawn on it, plus a per-cell netlist. Use this proactively when your hypothesis depends on visual verification — for example if you suspect a PNP should be NPN, call mmochip_vision on both devices to compare. Never state "I will look at the image" without actually issuing the tool call.${overlayLayerNameHint(snapshot.overlayLayers)} The layerName parameter selects which die image is shown. Layer naming convention: metal layers usually contain "me"/"metal" plus a metallization number (me1, metal1, metal 2…); semiconductor/diffusion layers are often named diffusion, si, polysi, poly; developed diffusion regions may be named hf, sirtl and similar. The die has a base image (the single raw photograph, id __base__) and overlay images for the remaining layers. You may ask the user which image a name corresponds to if a layer name is not self-explanatory. Request a metal layer to check whether device terminals really are connected, or a diffusion layer to compare whether two transistors look structurally similar by their diffusion regions.`
       : "Visual device inspection is currently disabled; reason about device types from the netlist geometry and model names only.",
+    `You have access to the mmochip_spice_sim tool for running ngspice simulations. CALL it to verify circuit behavior — e.g. compute gain, bandwidth, DC operating point, transient response, or any electrical characteristic. Supply either a full SPICE netlist (standard SPICE/CDL format, NOT Spectre syntax) or a subcircuit block plus analysis directives (.tran, .dc, .ac, .meas, sources, loads, etc.). The tool returns variable names and data point count. You can also use .meas commands to extract specific values (e.g. .meas dc Vout FIND v(out) AT 0.4). Use this proactively when your hypothesis can be verified electrically — for example if you suspect a bandgap reference, simulate it to confirm the output voltage is ~1.2V. If the user asks about electrical behavior, simulate it rather than guessing. The simulation runs server-side with ngspice. If the first simulation fails, analyze the error, fix the netlist or directives, and retry — you have up to 4 iterations.`,
   ].join("\n");
 
   const llmContext = buildLlmContext(resultShell, snapshot, assistantDataFlags);
@@ -1097,6 +1101,7 @@ export async function discussFindingWithLlm(
     const tools: unknown[] = [CARD_UPDATE_TOOL];
     if (useLvs) tools.push(LVS_TOOL);
     if (useVision) tools.push(VISION_TOOL);
+    if (useSpice) tools.push(SPICE_SIM_TOOL);
     return { tools, tool_choice: "auto" };
   };
 
@@ -1161,6 +1166,7 @@ export async function discussFindingWithLlm(
     const { content, toolCalls } = await callLlm(useTools);
     const lvsCall = toolCalls.find((tc) => tc.name === "mmochip_lvs_check");
     const visionCall = toolCalls.find((tc) => tc.name === "mmochip_vision");
+    const spiceSimCall = toolCalls.find((tc) => tc.name === "mmochip_spice_sim");
     const cardUpdateCall = toolCalls.find((tc) => tc.name === "mmochip_card_update");
 
     // Terminal: card_update brings the final reply + cardUpdate. Use its args.
@@ -1175,7 +1181,7 @@ export async function discussFindingWithLlm(
       break;
     }
 
-    if ((!lvsCall && !visionCall) || toolIterations >= MAX_TOOL_ITERS) {
+    if ((!lvsCall && !visionCall && !spiceSimCall) || toolIterations >= MAX_TOOL_ITERS) {
       lastContent = content;
       break;
     }
@@ -1235,6 +1241,24 @@ export async function discussFindingWithLlm(
           chatMessages.push({ role: "tool", tool_call_id: visionCall.id, content: JSON.stringify({ error: errMsg }) });
           onEvent?.({ type: "tool_result", tool: "mmochip_vision", ok: false });
         }
+      }
+    }
+
+    // Execute SPICE simulation tool
+    if (spiceSimCall && useSpice) {
+      const args = JSON.parse(spiceSimCall.arguments || "{}") as SpiceSimToolArgs;
+      // Use ngspice path from toolFlags if not provided by LLM
+      if (!args.binPath && ngspicePath) args.binPath = ngspicePath;
+      onEvent?.({ type: "tool_start", tool: "mmochip_spice_sim", args });
+      try {
+        const { text: toolResult } = await executeSpiceSimTool(args);
+        chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: toolResult });
+        onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: true });
+      } catch (err) {
+        const errMsg = err instanceof Error ? err.message : String(err);
+        console.error(`[assistant/discuss] spice_sim tool failed: ${errMsg}`);
+        chatMessages.push({ role: "tool", tool_call_id: spiceSimCall.id, content: JSON.stringify({ error: errMsg }) });
+        onEvent?.({ type: "tool_result", tool: "mmochip_spice_sim", ok: false });
       }
     }
 

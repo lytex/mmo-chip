@@ -46,6 +46,33 @@ export interface Obstacle {
 export interface WireData {
   polylines: Point[][];
   junctions: Point[];
+  /** Per-edge trace for surgical re-route. When present, only edges
+   *  touching a moved device are re-routed; others stay pixel-identical
+   *  to the ELK pass. Optional — absent → full re-route. */
+  edges?: TracedEdge[];
+}
+
+/** One routed edge of a net: the orthogonal wire connecting two device
+ *  terminals (or a device terminal to a synthetic hub). `fromKey`/`toKey`
+ *  are device keys; `"__hub__"` marks a synthetic N-terminal hub. */
+export interface TracedEdge {
+  id: string;
+  netId: number;
+  fromKey: string;
+  toKey: string;
+  /** Terminal name at each end (from the port id) — used by surgical
+   *  re-route to pick the correct pin anchor. */
+  fromTerminal: string;
+  toTerminal: string;
+  polylines: Point[][];
+}
+
+/** Anchor paired with its device key + terminal so local routing can
+ *  build per-edge traces (surgical re-route). */
+export interface AnchorInfo {
+  point: Point;
+  deviceKey: string;
+  terminal: string;
 }
 
 export interface InteractiveLayoutResult {
@@ -89,13 +116,16 @@ export interface AnalogLayoutOptions {
   edgeEdge?: number;
   /** Gap between wire and device (elk.spacing.edgeNode). Undefined → ELK default. */
   edgeNode?: number;
-  /** Merge parallel edges into a single routed wire (rail/bus look). */
-  mergeEdges?: boolean;
-  /** Prefer straight edges over detours (elk.layered.nodePlacement.favorStraightEdges). */
+  /** Prefer straight edges over balanced placement (elk.layered.nodePlacement.favorStraightEdges).
+   *  Always passed explicitly so `false` overrides ELK's orthogonal auto-default
+   *  of true. Default true (best for orthogonal schematic layout). */
   favorStraightEdges?: boolean;
   /** Hierarchy blocks (floorplan regions) collapsed into subcircuit
    *  rectangles. When present they are laid out as `kind:"block"` nodes. */
   blocks?: HierarchyBlock[];
+  /** Block boundary pins (external nets of the currently-open region).
+   *  Rendered as inputExt/outputExt pseudo-devices at the layout edges. */
+  blockPins?: Array<{ netId: number; name: string; direction: "input" | "output" }>;
 }
 
 /**
@@ -110,6 +140,7 @@ function blockPorts(b: HierarchyBlock): NodePortSpec[] {
     y: s.dy,
     side: s.isInput ? "WEST" : "EAST",
     netId: b.nets.find((n) => `${n.direction === "input" ? "in" : "out"}_${n.name}` === s.terminal)!.netId,
+    terminal: s.terminal,
   }));
 }
 
@@ -302,6 +333,9 @@ interface NodePortSpec {
   y: number;
   side: string;
   netId: number;
+  /** Terminal name (e.g. "D", "S", "G") — used to match the right port
+   *  when a device has multiple terminals on the same net. */
+  terminal: string;
 }
 
 /** All wired terminals of a device as ELK port specs (skin anchors). */
@@ -321,13 +355,18 @@ function devicePorts(d: AnalogDevice, table: SymbolTable): NodePortSpec[] {
       y: pin.dy,
       side: sideOf(pin.position),
       netId: term.netId,
+      terminal: term.name,
     });
   }
   return out;
 }
 
-/** Synthesized power devices: one VCC + one GND symbol (matches the
- *  static view, which always adds global VDD/GND cells). */
+/** Synthesized power devices: one symbol per power-net. If multiple
+ *  netIds share the same power name (e.g. two "GDD nets — common for
+ *  substrate connections that aren't wire-connected), a SEPARATE symbol is
+ *  created per netId with a unique key ("GND:109"). This avoids key
+ *  collisions in positions/portsByKey and lets the user see distinct
+ *  power domains. Each symbol has a single terminal. */
 export function powerDevices(
   devices: AnalogDevice[],
   namedNets: Map<number, string>,
@@ -342,9 +381,9 @@ export function powerDevices(
     if (!used.has(netId)) continue;
     if (name === vdd || name === gnd) {
       out.push({
-        id: name,
+        id: `${name}:${netId}`,
         kind: "power",
-        instanceName: name,
+        instanceName: `${name}:${netId}`,
         layer: "metal1",
         bbox: { x: 0, y: 0, width: 1, height: 1 },
         terminals: [{ name: "PLUS", netId }],
@@ -528,7 +567,7 @@ async function elkInteractiveLayout(
   for (const d of all) {
     const key = deviceKey(d);
     const template = templateForDevice(table, d);
-    const isGnd = d.instanceName === (opts.gnd ?? "GND");
+    const isGnd = (d.instanceName ?? "").startsWith(opts.gnd ?? "GND");
     const isBlock = isBlockDevice(d);
     const bIndex = blocks.findIndex((b) => b.regionId === key.slice("blk:".length));
     const size =
@@ -552,6 +591,7 @@ async function elkInteractiveLayout(
           y: isGnd ? -15 : 30,
           side: isGnd ? "NORTH" : "SOUTH",
           netId: term.netId,
+          terminal: term.name,
         });
       }
     } else if (isBlock && bIndex >= 0) {
@@ -572,10 +612,39 @@ async function elkInteractiveLayout(
   for (const io of ioNets) {
     const key = `io:${io.netId}`;
     sizes[key] = POWER_TEMPLATE_SIZE.io;
-    portsByKey.set(key, [{ pid: "Y", x: 30, y: 10, side: "EAST", netId: io.netId }]);
+    portsByKey.set(key, [{ pid: "Y", x: 30, y: 10, side: "EAST", netId: io.netId, terminal: "Y" }]);
     netMembers.set(io.netId, [
       ...(netMembers.get(io.netId) ?? []),
       { deviceKey: key, device: { kind: "__io" } as unknown as AnalogDevice, terminal: "Y" },
+    ]);
+  }
+
+  // Block boundary pin nodes (inputExt / outputExt)
+  // When a subcircuit region is open, these represent the block's external nets
+  // as pin symbols at the layout edges — same pattern as die I/O pins.
+  // Only include pins for nets that have at least one real device member —
+  // otherwise the pin would create a self-loop edge (two pins, no device)
+  // which crashes ELK's scanline layout.
+  const realDeviceNets = new Set<number>();
+  for (const d of devices) for (const t of d.terminals) if (t.netId >= 0) realDeviceNets.add(t.netId);
+  const blockPins = (opts.blockPins ?? []).filter((bp) => realDeviceNets.has(bp.netId));
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    sizes[key] = POWER_TEMPLATE_SIZE.io; // 30x20
+    // input pin (outputExt): port A at (0, 10) on WEST
+    // output pin (inputExt): port Y at (30, 10) on EAST
+    portsByKey.set(key, [{
+      pid: isInput ? "A" : "Y",
+      x: isInput ? 0 : 30,
+      y: 10,
+      side: isInput ? "WEST" : "EAST",
+      netId: bp.netId,
+      terminal: isInput ? "A" : "Y",
+    }]);
+    netMembers.set(bp.netId, [
+      ...(netMembers.get(bp.netId) ?? []),
+      { deviceKey: key, device: { kind: "__blockpin" } as unknown as AnalogDevice, terminal: isInput ? "A" : "Y" },
     ]);
   }
 
@@ -594,7 +663,7 @@ async function elkInteractiveLayout(
       width: size.w,
       height: size.h,
       ports: (portsByKey.get(key) ?? []).map((p, i) => ({
-        id: `${key}:${p.pid}:${i}`,
+        id: `${key}:${p.terminal}:${i}`,
         x: p.x,
         y: p.y,
         width: 0,
@@ -624,6 +693,33 @@ async function elkInteractiveLayout(
       },
     });
   }
+  // Block boundary pin nodes — same sizing as IO, placed at layout edges.
+  // Input pins (outputExt, port WEST) get WEST ports; output pins
+  // (inputExt, port EAST) get EAST ports.  No layerConstraint — ELK
+  // positions them naturally via port sides, avoiding scanline crashes
+  // on small graphs (1–2 devices).
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    const portId = isInput ? "A" : "Y";
+    const portX = isInput ? 0 : 30;
+    children.push({
+      id: key,
+      width: sizes[key].w,
+      height: sizes[key].h,
+      ports: [{
+        id: `${key}:${portId}:0`,
+        x: portX,
+        y: 10,
+        width: 0,
+        height: 0,
+        layoutOptions: { "port.side": isInput ? "WEST" : "EAST" },
+      }],
+      layoutOptions: {
+        portConstraints: "FIXED_POS",
+      },
+    });
+  }
 
   // Binary edges per (driver, consumer) — hyperedge split (netlist.tsx
   // convention; ELK layered+ORTHOGONAL rejects multi-source/multi-target).
@@ -641,26 +737,40 @@ async function elkInteractiveLayout(
   const edgeNetId = new Map<string, number>();
   let edgeCounter = 0;
   for (const [netId, members] of netMembers) {
-    const portOf = (deviceKey: string, netId: number): string | undefined => {
+    // Look up the ELK port id for a (device, net, terminal). A device can
+    // have multiple terminals on the same net (e.g. NMOS S+B on GND), so we
+    // must match by terminal name — not just take the first port on the net.
+    // Fallback: if terminal-specific match fails (e.g. port created with
+    // different terminal name), match by netId alone. This ensures power
+    // symbols (single terminal "PLUS") always get their port found.
+    const portOf = (deviceKey: string, netId: number, terminal: string): string | undefined => {
       const specs = portsByKey.get(deviceKey) ?? [];
-      const spec = specs.find((p) => p.netId === netId);
-      return spec ? `${deviceKey}:${spec.pid}:${specs.indexOf(spec)}` : undefined;
+      let spec = specs.find((p) => p.netId === netId && p.terminal === terminal);
+      if (!spec) spec = specs.find((p) => p.netId === netId);
+      return spec ? `${deviceKey}:${spec.terminal}:${specs.indexOf(spec)}` : undefined;
     };
     const isIoNet = ioNets.some((io) => io.netId === netId);
     const powerDev = powers.find((p) =>
       (p.terminals ?? []).some((t) => t.netId === netId),
     );
 
-    // Role of each routable member (has a port, not locked).
-    const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId));
+    // Role of each routable member (has a port for this terminal, not locked).
+    const routable = members.filter((m) => !opts.excludeKeys?.has(m.deviceKey) && !!portOf(m.deviceKey, netId, m.terminal));
     if (routable.length < 2) continue; // nothing to wire
 
     const roleOf = (m: { deviceKey: string; device: AnalogDevice; terminal: string }): PortRole => {
       if (powerDev && m.deviceKey === deviceKey(powerDev)) {
-        // power roles are fixed by rail kind (vcc driver, gnd sink)
-        return (powerDev.instanceName ?? "") === (opts.gnd ?? "GND") ? "input" : "output";
+        // power roles are fixed by rail kind (vcc driver, gnd sink).
+        // powerDev.instanceName is "GND:109" — check prefix, not exact match.
+        const isGnd = (powerDev.instanceName ?? "").startsWith((opts.gnd ?? "GND"));
+        return isGnd ? "input" : "output";
       }
       if (isIoNet && m.deviceKey === `io:${netId}`) return "input"; // inputExt
+      // Block boundary pin: outputExt (input pin, terminal A) = consumer,
+      // inputExt (output pin, terminal Y) = driver.
+      if (m.deviceKey.startsWith("bp:")) {
+        return m.terminal === "A" ? "input" : "output";
+      }
       // Hierarchy block: in_* is a consumer, out_* is a driver.
       if (isBlockDevice(m.device)) {
         return m.terminal.startsWith("in_") ? "input" : "output";
@@ -689,19 +799,42 @@ async function elkInteractiveLayout(
     }
     if (drivers.length === 0 || consumers.length === 0) continue;
 
-    // Fan-out guard: collapse to a single hub driver when the full
-    // product would blow up the ELK graph on a power/bus rail.
-    if (drivers.length * consumers.length > MAX_EDGES_PER_NET) {
-      drivers = [drivers[0]];
+    // For power nets, every device needs its own edge to the power symbol
+    // (the hub). Don't collapse drivers, and restrict consumers to just
+    // the power symbol. This preserves the "bus" look and ensures all
+    // devices are connected.
+    const netName = namedNets.get(netId);
+    const isPowerNet = netName === (opts.vdd ?? "VDD") || netName === (opts.gnd ?? "GND");
+    if (isPowerNet && powerDev) {
+      const pKey = deviceKey(powerDev);
+      // For power nets, ALL non-power devices are drivers (current flows
+      // to/from the power rail). Only the power symbol is the consumer.
+      // This ensures every device gets its own edge to the power symbol,
+      // regardless of pin position-based role classification.
+      const powerConsumer = routable.filter((m) => m.deviceKey === pKey);
+      const deviceDrivers = routable.filter((m) => m.deviceKey !== pKey);
+      drivers = deviceDrivers;
+      consumers = powerConsumer.length > 0 ? powerConsumer : consumers.filter((c) => c.deviceKey === pKey);
+      if (drivers.length === 0 || consumers.length === 0) {
+        // Fallback to original classification if something went wrong
+        drivers = routable.filter((m) => roleOf(m) === "output");
+        consumers = routable.filter((m) => roleOf(m) === "input");
+      }
+    } else {
+      // Fan-out guard: collapse to a single hub driver when the full
+      // product would blow up the ELK graph on a power/bus rail.
+      if (drivers.length * consumers.length > MAX_EDGES_PER_NET) {
+        drivers = [drivers[0]];
+      }
     }
 
-    const srcPort = portOf(drivers[0].deviceKey, netId);
+    const srcPort = portOf(drivers[0].deviceKey, netId, drivers[0].terminal);
     if (!srcPort) continue;
     for (const driver of drivers) {
-      const dsrc = portOf(driver.deviceKey, netId);
+      const dsrc = portOf(driver.deviceKey, netId, driver.terminal);
       if (!dsrc) continue;
       for (const c of consumers) {
-        const dstPort = portOf(c.deviceKey, netId);
+        const dstPort = portOf(c.deviceKey, netId, c.terminal);
         if (!dstPort) continue;
         const id = `e${edgeCounter++}`;
         edges.push({ id, sources: [dsrc], targets: [dstPort] });
@@ -730,8 +863,7 @@ async function elkInteractiveLayout(
       "elk.layered.spacing.nodeNodeBetweenLayers": spacingOf(opts.betweenLayers, INTERACTIVE_ELK_DEFAULTS.betweenLayers),
       ...(opts.edgeEdge != null ? { "elk.spacing.edgeEdge": String(opts.edgeEdge) } : {}),
       ...(opts.edgeNode != null ? { "elk.spacing.edgeNode": String(opts.edgeNode) } : {}),
-      ...(opts.mergeEdges ? { "elk.layered.mergeEdges": "true" } : {}),
-      ...(opts.favorStraightEdges ? { "elk.layered.nodePlacement.favorStraightEdges": "true" } : {}),
+      "elk.layered.nodePlacement.favorStraightEdges": String(opts.favorStraightEdges),
     },
     children,
     edges,
@@ -746,6 +878,30 @@ async function elkInteractiveLayout(
 
   // Group routed sections per net → polylines → junctions.
   const byNet = new Map<number, PlacedEdge[]>();
+  // Per-edge endpoint device keys + terminal names (for surgical re-route).
+  // Port ids: regular `${deviceKey}:${term}:${idx}` (e.g. "Q1:B:0"),
+  // io pins `io:${netId}:${term}:${idx}` (e.g. "io:123:Y:0"). The io: prefix
+  // contains a colon, so split(":")[0] would yield "io" — wrong. Extract
+  // the full key (io:123) and the terminal name from the port id.
+  const edgeFromKey = new Map<string, string>();
+  const edgeToKey = new Map<string, string>();
+  const edgeFromTerm = new Map<string, string>();
+  const edgeToTerm = new Map<string, string>();
+  // Parse a port id back into (deviceKey, terminal). Port ids are built as
+  // `${deviceKey}:${pid}:${idx}` in the ELK graph. The deviceKey itself may
+  // contain colons: regular "M_1", io "io:5", power "GND:109". We parse from
+  // the right: last segment = idx, second-to-last = pid, rest = deviceKey.
+  const deviceKeyFromPort = (portId: string): { key: string; term: string } => {
+    const p = String(portId).split(":");
+    if (p.length >= 3) {
+      const idx = p[p.length - 1];
+      const pid = p[p.length - 2];
+      const key = p.slice(0, p.length - 2).join(":");
+      return { key, term: pid };
+    }
+    if (p.length === 2) return { key: p[0] ?? "", term: p[1] ?? "" };
+    return { key: p[0] ?? "", term: "" };
+  };
   for (const e of result.edges ?? []) {
     const netId = edgeNetId.get(e.id);
     if (netId == null) continue;
@@ -758,12 +914,32 @@ async function elkInteractiveLayout(
     let list = byNet.get(netId);
     if (!list) byNet.set(netId, (list = []));
     list.push({ id: e.id, polylines, netId });
+    if (e.sources?.[0]) {
+      const { key, term } = deviceKeyFromPort(e.sources[0]);
+      edgeFromKey.set(e.id, key);
+      edgeFromTerm.set(e.id, term);
+    }
+    if (e.targets?.[0]) {
+      const { key, term } = deviceKeyFromPort(e.targets[0]);
+      edgeToKey.set(e.id, key);
+      edgeToTerm.set(e.id, term);
+    }
   }
   const wires = new Map<number, WireData>();
   for (const [netId, placed] of byNet) {
+    const edges: TracedEdge[] = placed.map((p) => ({
+      id: p.id,
+      netId,
+      fromKey: edgeFromKey.get(p.id) ?? "",
+      toKey: edgeToKey.get(p.id) ?? "",
+      fromTerminal: edgeFromTerm.get(p.id) ?? "",
+      toTerminal: edgeToTerm.get(p.id) ?? "",
+      polylines: p.polylines,
+    }));
     wires.set(netId, {
       polylines: placed.flatMap((p) => p.polylines),
       junctions: computeJunctions(placed).map((j) => ({ x: j.x, y: j.y })),
+      edges,
     });
   }
 
@@ -788,7 +964,23 @@ export function gridFallback(
 ): InteractiveLayoutResult {
   const powers = powerDevices(devices, namedNets, opts);
   const blockDevs = blockDevices(opts.blocks ?? []);
-  const all = [...powers, ...blockDevs, ...devices];
+  // Block pin pseudo-devices (same filtering as elkInteractiveLayout)
+  const realDeviceNets = new Set<number>();
+  for (const d of devices) for (const t of d.terminals) if (t.netId >= 0) realDeviceNets.add(t.netId);
+  const blockPins = (opts.blockPins ?? []).filter((bp) => realDeviceNets.has(bp.netId));
+  const bpDevs: AnalogDevice[] = blockPins.map((bp) => {
+    const isInput = bp.direction === "input";
+    return {
+      id: `bp:${bp.netId}`,
+      kind: "__blockpin",
+      instanceName: `bp:${bp.netId}`,
+      layer: "metal1",
+      bbox: { x: 0, y: 0, width: 1, height: 1 },
+      geometry: {},
+      terminals: [{ name: isInput ? "A" : "Y", netId: bp.netId }],
+    } as unknown as AnalogDevice;
+  });
+  const all = [...powers, ...blockDevs, ...bpDevs, ...devices];
   const positions: Record<string, Point> = {};
   const sizes: Record<string, { w: number; h: number }> = {};
   let maxW = 40;
@@ -817,8 +1009,10 @@ export function gridFallback(
     sizes[deviceKey(d)] = isBlockDevice(d)
       ? blockSize((opts.blocks ?? []).find((b) => b.regionId === d.id.slice("blk:".length)) ?? { regionId: d.id, name: d.id, nets: [] })
       : (d.kind as string) === "power"
-        ? (d.instanceName === (opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
-        : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
+        ? ((d.instanceName ?? "").startsWith(opts.gnd ?? "GND") ? POWER_TEMPLATE_SIZE.gnd : POWER_TEMPLATE_SIZE.vcc)
+        : (d.kind as string) === "__blockpin" || (d.kind as string) === "__io"
+          ? POWER_TEMPLATE_SIZE.io
+          : t ? { w: t.width, h: t.height } : { w: 30, h: 40 };
   });
 
   // Local routing for all nets.
@@ -832,6 +1026,14 @@ export function gridFallback(
       if (!list) netIndex.set(t.netId, (list = []));
       list.push({ deviceKey: deviceKey(bd), terminal: t.name });
     }
+  }
+  // Add block pin members into the net index.
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    let list = netIndex.get(bp.netId);
+    if (!list) netIndex.set(bp.netId, (list = []));
+    list.push({ deviceKey: key, terminal: isInput ? "A" : "Y" });
   }
   const obstacles: Obstacle[] = Object.entries(positions).map(([key, p]) =>
     deviceObstacle(p, sizes[key] ?? { w: 30, h: 40 }),
@@ -850,12 +1052,22 @@ export function gridFallback(
       return pin ? { dx: pin.x, dy: pin.y } : undefined;
     });
   }
+  // Block pin lookups (same pin offsets as ELK path).
+  for (const bp of blockPins) {
+    const key = `bp:${bp.netId}`;
+    const isInput = bp.direction === "input";
+    lookups.set(key, (terminal: string) => {
+      if (isInput && terminal === "A") return { dx: 0, dy: 10 };
+      if (!isInput && terminal === "Y") return { dx: 30, dy: 10 };
+      return undefined;
+    });
+  }
   for (const [netId, members] of netIndex) {
     if (!members.some((m) => keySet.has(m.deviceKey))) continue;
     const anchors = members
       .filter((m) => keySet.has(m.deviceKey))
-      .map((m) => anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal))
-      .filter((p): p is Point => !!p);
+      .map((m) => ({ point: anchorWorld(m.deviceKey, positions, lookups.get(m.deviceKey), m.terminal), deviceKey: m.deviceKey, terminal: m.terminal }))
+      .filter((p): p is AnchorInfo => !!p.point);
     if (anchors.length === 0) continue;
     wires.set(netId, routeNetLocal(anchors, obstacles));
   }
@@ -898,7 +1110,7 @@ export function terminalPinLookup(
       : undefined);
   }
   for (const p of powers) {
-    const isGnd = p.instanceName === (opts.gnd ?? "GND");
+    const isGnd = (p.instanceName ?? "").startsWith(opts.gnd ?? "GND");
     map.set(deviceKey(p), (terminal: string) =>
       terminal === "PLUS" ? { dx: 10, dy: isGnd ? -15 : 30 } : undefined);
   }
@@ -976,8 +1188,8 @@ export function orientedSize(
 
 // ── Local drag-time router ───────────────────────────────────────
 
-const OBSTACLE_MARGIN = 8;
 const OVERLAP_PENALTY = 60;
+const WIRE_PENALTY = 200;
 const BEND_PENALTY = 2;
 
 /**
@@ -999,10 +1211,72 @@ export function deviceObstacle(
   return { x: p.x - WIRE_OBSTACLE_PAD, y: p.y - WIRE_OBSTACLE_PAD, w: os.w + 2 * WIRE_OBSTACLE_PAD, h: os.h + 2 * WIRE_OBSTACLE_PAD };
 }
 
+/**
+ * Uniform-grid occupancy index for wire-wire spacing. Built once per
+ * re-route from the current segments of OTHER nets (the net being routed
+ * is excluded). Cell size = edgeEdge gap; each occupied cell is inflated
+ * to its 8 neighbours so a candidate within `edgeEdge` of an existing wire
+ * scores a proximity penalty.
+ */
+export class WireGrid {
+  private cells = new Set<string>();
+  /** Cell size in px (= edgeEdge gap). */
+  readonly cellSize: number;
+
+  constructor(segments: Array<{ a: Point; b: Point }>, gap: number) {
+    this.cellSize = Math.max(gap, 2);
+    for (const seg of segments) this.rasterize(seg.a, seg.b);
+  }
+
+  private key(cx: number, cy: number): string {
+    return `${cx},${cy}`;
+  }
+
+  /** Mark a 3x3 block of cells around each point along the segment. */
+  private rasterize(a: Point, b: Point) {
+    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (dist < 0.001) {
+      this.markCellBlock(a.x, a.y);
+      return;
+    }
+    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      this.markCellBlock(a.x + (b.x - a.x) * t, a.y + (b.y - a.y) * t);
+    }
+  }
+
+  private markCellBlock(x: number, y: number) {
+    const cx = Math.floor(x / this.cellSize);
+    const cy = Math.floor(y / this.cellSize);
+    for (let dx = -1; dx <= 1; dx++) {
+      for (let dy = -1; dy <= 1; dy++) {
+        this.cells.add(this.key(cx + dx, cy + dy));
+      }
+    }
+  }
+
+  /** Length (px) of segment (a,b) that runs within `edgeEdge` of an
+   *  existing wire. 0 when clear. */
+  proximityLength(a: Point, b: Point): number {
+    const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (dist < 0.001) return 0;
+    const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
+    let occupied = 0;
+    for (let i = 0; i <= steps; i++) {
+      const t = i / steps;
+      const x = a.x + (b.x - a.x) * t;
+      const y = a.y + (b.y - a.y) * t;
+      if (this.cells.has(this.key(Math.floor(x / this.cellSize), Math.floor(y / this.cellSize)))) occupied++;
+    }
+    return (occupied / (steps + 1)) * dist;
+  }
+}
+
 /** Segment length inside an expanded rect (0 if no overlap). */
-function segmentRectOverlap(a: Point, b: Point, r: Obstacle): number {
-  const rx0 = r.x - OBSTACLE_MARGIN, ry0 = r.y - OBSTACLE_MARGIN;
-  const rx1 = r.x + r.w + OBSTACLE_MARGIN, ry1 = r.y + r.h + OBSTACLE_MARGIN;
+function segmentRectOverlap(a: Point, b: Point, r: Obstacle, margin: number): number {
+  const rx0 = r.x - margin, ry0 = r.y - margin;
+  const rx1 = r.x + r.w + margin, ry1 = r.y + r.h + margin;
   if (Math.abs(a.y - b.y) < 0.001) {
     // horizontal
     if (a.y <= ry0 || a.y >= ry1) return 0;
@@ -1018,12 +1292,13 @@ function segmentRectOverlap(a: Point, b: Point, r: Obstacle): number {
   return 0;
 }
 
-function scorePath(path: Point[], obstacles: Obstacle[]): number {
+function scorePath(path: Point[], obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): number {
   let score = 0;
   for (let i = 1; i < path.length; i++) {
     const a = path[i - 1], b = path[i];
     score += Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
-    for (const o of obstacles) score += OVERLAP_PENALTY * segmentRectOverlap(a, b, o);
+    for (const o of obstacles) score += OVERLAP_PENALTY * segmentRectOverlap(a, b, o, edgeNode);
+    if (wireGrid) score += WIRE_PENALTY * wireGrid.proximityLength(a, b);
   }
   score += BEND_PENALTY * Math.max(0, path.length - 2);
   return score;
@@ -1051,7 +1326,7 @@ function candidatePaths(a: Point, b: Point): Point[][] {
   return cands;
 }
 
-function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
+function bestPath(a: Point, b: Point, obstacles: Obstacle[], edgeNode: number, wireGrid?: WireGrid): Point[] {
   const cands = candidatePaths(a, b);
   // Obstacle-aware detour rails: when the plain L/Z candidates all cut
   // through a nearby device, offer above/below/left/right corridors.
@@ -1062,7 +1337,7 @@ function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
   for (const o of obstacles) {
     if (detours >= 8) break;
     if (o.x > x1 + 24 || o.x + o.w < x0 - 24 || o.y > y1 + 24 || o.y + o.h < y0 - 24) continue;
-    const m = OBSTACLE_MARGIN + 4;
+    const m = edgeNode + 4;
     cands.push([a, { x: a.x, y: o.y - m }, { x: b.x, y: o.y - m }, b]);
     cands.push([a, { x: a.x, y: o.y + o.h + m }, { x: b.x, y: o.y + o.h + m }, b]);
     cands.push([a, { x: o.x - m, y: a.y }, { x: o.x - m, y: b.y }, b]);
@@ -1072,7 +1347,7 @@ function bestPath(a: Point, b: Point, obstacles: Obstacle[]): Point[] {
   let best = cands[0];
   let bestScore = Infinity;
   for (const c of cands) {
-    const s = scorePath(c, obstacles);
+    const s = scorePath(c, obstacles, edgeNode, wireGrid);
     if (s < bestScore) {
       bestScore = s;
       best = c;
@@ -1087,21 +1362,51 @@ function median(values: number[]): number {
   return v.length % 2 ? v[m] : (v[m - 1] + v[m]) / 2;
 }
 
+/** Options for local drag-time routing — wire-device and wire-wire gaps. */
+export interface LocalRouteOptions {
+  /** Wire-to-device gap (replaces the old hardcoded OBSTACLE_MARGIN).
+   *  Default 12 (ELK default edgeNode). */
+  edgeNode?: number;
+  /** Wire-to-wire gap. Default 10 (ELK default edgeEdge). */
+  edgeEdge?: number;
+  /** Pre-built occupancy grid of other nets' segments (built by caller). */
+  wireGrid?: WireGrid;
+}
+
 /**
  * Re-route ONE net locally (drag-time). Two terminals → best L/Z
  * candidate; N terminals → median hub + L/Z spokes, junction at hub.
  * Deterministic; never runs ELK.
+ *
+ * Returns `edges` (per-edge trace) so the caller can do surgical
+ * re-route on the result — only spokes touching a moved device need
+ * re-routing; the rest stay pixel-identical.
  */
-export function routeNetLocal(anchors: Point[], obstacles: Obstacle[]): WireData {
+export function routeNetLocal(anchors: AnchorInfo[], obstacles: Obstacle[], options?: LocalRouteOptions): WireData {
+  const edgeNode = options?.edgeNode ?? 12;
+  const wireGrid = options?.wireGrid;
   const pts = anchors.filter(
-    (p, i, arr) => arr.findIndex((q) => Math.abs(q.x - p.x) < 0.5 && Math.abs(q.y - p.y) < 0.5) === i,
+    (p, i, arr) => arr.findIndex((q) => Math.abs(q.point.x - p.point.x) < 0.5 && Math.abs(q.point.y - p.point.y) < 0.5) === i,
   );
-  if (pts.length === 0) return { polylines: [], junctions: [] };
-  if (pts.length === 1) return { polylines: [], junctions: [] };
+  if (pts.length === 0) return { polylines: [], junctions: [], edges: [] };
+  if (pts.length === 1) return { polylines: [], junctions: [], edges: [] };
   if (pts.length === 2) {
-    return { polylines: [bestPath(pts[0], pts[1], obstacles)], junctions: [] };
+    const polylines = [bestPath(pts[0].point, pts[1].point, obstacles, edgeNode, wireGrid)];
+    return {
+      polylines,
+      junctions: [],
+      edges: [{ id: `${pts[0].deviceKey}-${pts[1].deviceKey}`, netId: -1, fromKey: pts[0].deviceKey, toKey: pts[1].deviceKey, fromTerminal: pts[0].terminal, toTerminal: pts[1].terminal, polylines }],
+    };
   }
-  const hub = { x: median(pts.map((p) => p.x)), y: median(pts.map((p) => p.y)) };
-  const polylines = pts.map((p) => bestPath(p, hub, obstacles));
-  return { polylines, junctions: [hub] };
+  const hub = { x: median(pts.map((p) => p.point.x)), y: median(pts.map((p) => p.point.y)) };
+  const edges: TracedEdge[] = pts.map((p) => ({
+    id: `${p.deviceKey}-hub`,
+    netId: -1,
+    fromKey: p.deviceKey,
+    toKey: "__hub__",
+    fromTerminal: p.terminal,
+    toTerminal: "",
+    polylines: [bestPath(p.point, hub, obstacles, edgeNode, wireGrid)],
+  }));
+  return { polylines: edges.flatMap((e) => e.polylines), junctions: [hub], edges };
 }

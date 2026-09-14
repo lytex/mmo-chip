@@ -3,6 +3,7 @@ import { promises as fs } from "node:fs";
 import path from "node:path";
 import sharp from "sharp";
 import { writeDieRecord } from "../store.js";
+import { ensurePreviewImage } from "../imagePreview.js";
 import type { DieLevelMetadata, DieRecord } from "../types.js";
 
 const VALID_MIME_TYPES = new Set(["image/png", "image/jpeg"]);
@@ -105,6 +106,18 @@ export async function importDieShot(params: {
   });
 
   await writeDieRecord(params.dataRoot, record);
+
+  // Pre-generate the cached IC Package preview so the first page load is
+  // instant.  Non-fatal: the route regenerates it on demand if this fails.
+  try {
+    await ensurePreviewImage({
+      sourcePath: originalPath,
+      cachePath: path.join(dieDir, "previews", `${sanitizedBase}.4096.jpg`)
+    });
+    params.logger?.(`generated preview for ${record.name}`);
+  } catch (error) {
+    params.logger?.(`preview generation failed: ${(error as Error).message}`);
+  }
 
   await params.onProgress?.({
     phase: "completed",

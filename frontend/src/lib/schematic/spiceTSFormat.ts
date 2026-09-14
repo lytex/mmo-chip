@@ -329,16 +329,6 @@ export function generateSpiceTSViews(
         perRegion.set(region.id, { name: subName, result });
       }
     }
-
-    // Unassigned devices
-    const unassigned = named.filter((d) => {
-      const k = d.instanceName ?? d.id;
-      return !assignedKeys.has(k);
-    });
-    if (unassigned.length > 0) {
-      const result = formatDevicesAsSpiceTS(unassigned, namedNets, `${moduleName}.top-level`, vdd, gnd);
-      perRegion.set("__unassigned__", { name: "top-level", result });
-    }
   }
 
   return { flat, perRegion };

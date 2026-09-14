@@ -126,6 +126,7 @@ export function createApp(config: {
       if (response.headersSent) return;
 
       if ((error as NodeJS.ErrnoException).code === "ENOENT") {
+        console.error("[http] ENOENT:", error);
         response.status(404).json({ error: "Not found" });
         return;
       }

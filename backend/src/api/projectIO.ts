@@ -321,6 +321,7 @@ async function handleImport(
 
     await ensureDir(path.join(stagedDieDir, "original"));
     await ensureDir(path.join(stagedDieDir, "tiles"));
+    await ensureDir(stagedOverlayDir);
     await ensureDir(stagedExtrasDir);
 
     const seenSingleEntries = new Set<string>(["metadata.json"]);
@@ -438,6 +439,7 @@ async function handleImport(
     await fs.rename(stagedDieDir, dieDir);
     dieMoved = true;
     if (importedOverlays.size > 0) {
+      await ensureDir(path.join(dataRoot, "overlay-images"));
       await fs.rename(stagedOverlayDir, overlayDir);
       overlayMoved = true;
     }
