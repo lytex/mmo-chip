@@ -67,6 +67,12 @@ interface PreferencesState {
    *  used in `Cell.cellTypeId`). Same override semantics as `hiddenNetIds`,
    *  composed against `hiddenKinds`'s "cell" entry instead of "net". */
   hiddenCellTypeIds: Record<string, boolean>;
+  /** Per-floorplan-type visibility override, keyed by the region's `name`
+   *  (floorplan regions sharing a name are treated as one "type", grouped
+   *  together in the Items outline the same way `cellTypeId` groups cells).
+   *  Same override semantics as `hiddenCellTypeIds`, composed against
+   *  `hiddenKinds`'s "floorplan" entry instead of "cell". */
+  hiddenFloorplanTypeNames: Record<string, boolean>;
   /** Global ruler-layer visibility. Unlike `hiddenKinds` (nets/cells), a
    *  ruler isn't an AnnotationKind — it renders via its own overlay — so this
    *  is a plain boolean rather than a kind-array entry. Default false (all
@@ -275,6 +281,10 @@ interface PreferencesActions {
   setCellTypeHidden: (cellTypeId: string, hidden: boolean) => void;
   /** Clear all individual cell-type hidden overrides (back to "all visible"). */
   resetHiddenCellTypes: () => void;
+  /** Show/hide one floorplan type (keyed by region `name`), independent of the others. */
+  setFloorplanTypeHidden: (name: string, hidden: boolean) => void;
+  /** Clear all individual floorplan-type hidden overrides (back to "all visible"). */
+  resetHiddenFloorplanTypes: () => void;
   /** Flip the global ruler-layer visibility and clear every per-ruler
    *  override, so each click is an unambiguous "hide everything" /
    *  "show everything". */
@@ -397,6 +407,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         netColors: {},
         hiddenNetIds: {},
         hiddenCellTypeIds: {},
+        hiddenFloorplanTypeNames: {},
         rulersHidden: false,
         rulerVisibilityOverrides: {},
         customNetColorsEnabled: true,
@@ -554,6 +565,22 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             Object.keys(state.hiddenCellTypeIds).length === 0
               ? state
               : { hiddenCellTypeIds: {} }
+          ),
+        setFloorplanTypeHidden: (name, hidden) =>
+          set((state) => {
+            const isDefault = hidden === state.hiddenKinds.includes("floorplan");
+            if (isDefault) {
+              if (!(name in state.hiddenFloorplanTypeNames)) return state;
+              const { [name]: _, ...rest } = state.hiddenFloorplanTypeNames;
+              return { hiddenFloorplanTypeNames: rest };
+            }
+            return { hiddenFloorplanTypeNames: { ...state.hiddenFloorplanTypeNames, [name]: hidden } };
+          }),
+        resetHiddenFloorplanTypes: () =>
+          set((state) =>
+            Object.keys(state.hiddenFloorplanTypeNames).length === 0
+              ? state
+              : { hiddenFloorplanTypeNames: {} }
           ),
         toggleRulersVisibility: () =>
           set((state) => ({
@@ -770,6 +797,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           netColors: state.netColors,
           hiddenNetIds: state.hiddenNetIds,
           hiddenCellTypeIds: state.hiddenCellTypeIds,
+          hiddenFloorplanTypeNames: state.hiddenFloorplanTypeNames,
           rulersHidden: state.rulersHidden,
           rulerVisibilityOverrides: state.rulerVisibilityOverrides,
           customNetColorsEnabled: state.customNetColorsEnabled,
@@ -846,6 +874,16 @@ export function selectCellTypeVisible(cellTypeId: string) {
   return (state: PreferencesState) => {
     const override = state.hiddenCellTypeIds[cellTypeId];
     return override === undefined ? !state.hiddenKinds.includes("cell") : !override;
+  };
+}
+
+/** Helper selector: is this floorplan type (grouped by region `name`)
+ *  currently visible? Same override semantics as `selectCellTypeVisible`,
+ *  composed against "floorplan" instead. */
+export function selectFloorplanTypeVisible(name: string) {
+  return (state: PreferencesState) => {
+    const override = state.hiddenFloorplanTypeNames[name];
+    return override === undefined ? !state.hiddenKinds.includes("floorplan") : !override;
   };
 }
 

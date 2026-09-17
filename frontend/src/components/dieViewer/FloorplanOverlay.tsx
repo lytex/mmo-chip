@@ -11,6 +11,7 @@ import type { DieAnnotations, FloorplanRegion } from "shared";
 import type { LiveValue } from "../../lib/liveValue";
 import { useLiveValue } from "../../lib/liveValue";
 import { useFloorplanStore } from "../../state/floorplan";
+import { usePreferences } from "../../state/preferences";
 import type { Viewport } from "../../renderer/types";
 import { FloorplanRegionPopover } from "./FloorplanRegionPopover";
 
@@ -45,6 +46,15 @@ export function FloorplanOverlay({
   const selectedRegionId = useFloorplanStore((s) => s.selectedRegionId);
   const selectRegion = useFloorplanStore((s) => s.selectRegion);
   const draft = useFloorplanStore((s) => s.draft);
+  const floorplanGloballyHidden = usePreferences((s) => s.hiddenKinds.includes("floorplan"));
+  const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
+  const isRegionVisible = useCallback(
+    (region: FloorplanRegion) => {
+      const override = hiddenFloorplanTypeNames[region.name || "(unnamed)"];
+      return override === undefined ? !floorplanGloballyHidden : !override;
+    },
+    [floorplanGloballyHidden, hiddenFloorplanTypeNames]
+  );
 
   const openPopover = useCallback(
     (region: FloorplanRegion) => {
@@ -63,6 +73,7 @@ export function FloorplanOverlay({
     const items: { region: FloorplanRegion; cssLeft: number; cssTop: number; cssW: number; cssH: number; isDraft: boolean }[] = [];
 
     for (const r of regions) {
+      if (!isRegionVisible(r)) continue;
       const pts = r.geometry;
       const minX = Math.min(...pts.map((p) => p.x));
       const minY = Math.min(...pts.map((p) => p.y));
@@ -109,7 +120,7 @@ export function FloorplanOverlay({
     }
 
     return items;
-  }, [regions, draft, viewport]);
+  }, [regions, draft, viewport, isRegionVisible]);
 
   // Selected region for popover
   const selectedRegion = selectedRegionId

@@ -1,8 +1,9 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
-import type { DieAnnotations } from "shared";
+import type { DieAnnotations, FloorplanRegion } from "shared";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
 import { useOverlayLayers } from "../../state/overlayLayers";
+import { useFloorplanStore } from "../../state/floorplan";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
 import { apiPut, apiUpload } from "../../api/client";
 import {
@@ -103,6 +104,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const hiddenCellTypeIds = usePreferences((s) => s.hiddenCellTypeIds);
   const setCellTypeHidden = usePreferences((s) => s.setCellTypeHidden);
   const resetHiddenCellTypes = usePreferences((s) => s.resetHiddenCellTypes);
+  const hiddenFloorplanTypeNames = usePreferences((s) => s.hiddenFloorplanTypeNames);
+  const setFloorplanTypeHidden = usePreferences((s) => s.setFloorplanTypeHidden);
+  const resetHiddenFloorplanTypes = usePreferences((s) => s.resetHiddenFloorplanTypes);
+  const floorplanRegions = useFloorplanStore((s) => s.regions);
   const pinNamesVisible = usePreferences((s) => s.pinNamesVisible);
   const setPinNamesVisible = usePreferences((s) => s.setPinNamesVisible);
 
@@ -227,6 +232,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   }, [addLayer, dieId, loadingTestImages]);
 
   const cellsByType = useMemo(() => groupCellsByType(annotations), [annotations]);
+  const floorplansByType = useMemo(() => groupFloorplansByName(floorplanRegions), [floorplanRegions]);
   const viaTotals = useMemo(() => viaCounts(annotations), [annotations]);
 
   if (!annotations) {
@@ -480,6 +486,66 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                           {Ic.link}
                         </span>
                       ) : undefined}
+                    />
+                  );
+                })}
+            </div>
+          );
+        })}
+
+      <TreeSep />
+
+      {/* Floorplans -------------------------------------------------------- */}
+      <TreeRow
+        expand={isOpen("floorplan") ? "open" : "closed"}
+        label="Floorplans"
+        meta={floorplanRegions.length}
+        visibility={{
+          ...visibilityFor("floorplan"),
+          // Same all-or-nothing / per-item split as Cells: the section eye
+          // stays all-or-nothing, but each click also resets per-type
+          // overrides so hiding clears the slate and showing again reveals
+          // every floorplan type.
+          onToggle: () => {
+            resetHiddenFloorplanTypes();
+            toggleKindVisibility("floorplan");
+          }
+        }}
+        onToggleExpand={() => toggleSection("floorplan")}
+        onSelect={() => toggleSection("floorplan")}
+      />
+      {isOpen("floorplan") &&
+        floorplansByType.map((group) => {
+          const groupKey = `floorplanType:${group.name}`;
+          const open = expandedGroups.includes(groupKey);
+          const typeOverride = hiddenFloorplanTypeNames[group.name];
+          const typeVisible = typeOverride === undefined ? !hiddenKinds.includes("floorplan") : !typeOverride;
+          return (
+            <div key={groupKey}>
+              <TreeRow
+                depth={1}
+                expand={open ? "open" : "closed"}
+                label={group.name}
+                meta={group.regions.length}
+                visibility={{
+                  visible: typeVisible,
+                  onToggle: () => setFloorplanTypeHidden(group.name, typeVisible)
+                }}
+                selected={selectedIds.has(groupKey)}
+                onToggleExpand={() => toggleGroup(groupKey)}
+                onSelect={() => select([groupKey])}
+              />
+              {open &&
+                group.regions.map((region) => {
+                  const id = `floorplan:${region.id}`;
+                  return (
+                    <TreeRow
+                      key={id}
+                      depth={2}
+                      icon={Ic.floorplan}
+                      label={region.name || region.id.slice(0, 8)}
+                      selected={selectedIds.has(id)}
+                      onSelect={() => select([id])}
                     />
                   );
                 })}
@@ -1075,6 +1141,22 @@ function groupCellsByType(annotations: DieAnnotations | undefined) {
     .map((cellType) => ({ cellType, cells: byType.get(cellType.id) ?? [] }))
     .filter((g) => g.cells.length > 0)
     .sort((a, b) => b.cells.length - a.cells.length);
+}
+
+/** Group floorplan regions into "types" by their (assumed-authoritative)
+ *  `name` — regions sharing a name are treated as instances of one type,
+ *  same idea as `groupCellsByType` grouping cells by `cellTypeId`. */
+function groupFloorplansByName(regions: FloorplanRegion[]) {
+  const byName = new Map<string, FloorplanRegion[]>();
+  for (const region of regions) {
+    const name = region.name || "(unnamed)";
+    const list = byName.get(name);
+    if (list) list.push(region);
+    else byName.set(name, [region]);
+  }
+  return Array.from(byName.entries())
+    .map(([name, regions]) => ({ name, regions }))
+    .sort((a, b) => b.regions.length - a.regions.length);
 }
 
 function viaCounts(annotations: DieAnnotations | undefined) {

@@ -4,7 +4,8 @@ export const ANNOTATION_KIND_VALUES = [
   "via",
   "roi",
   "pin",
-  "ignore"
+  "ignore",
+  "floorplan"
 ] as const;
 
 export type AnnotationKind = (typeof ANNOTATION_KIND_VALUES)[number];
