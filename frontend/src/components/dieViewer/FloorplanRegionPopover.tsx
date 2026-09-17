@@ -457,7 +457,7 @@ export function FloorplanRegionPopover({
         <span style={{ fontSize: 10, color: "#888", textTransform: "uppercase", marginBottom: 4, display: "block" }}>
           Color
         </span>
-        <span className="row" style={{ gap: 4, flexWrap: "wrap" }}>
+        <span className="row" style={{ gap: 4, flexWrap: "wrap", alignItems: "center" }}>
           {COLORS.map((c) => (
             <button
               key={c}
@@ -477,6 +477,25 @@ export function FloorplanRegionPopover({
               }}
             />
           ))}
+          <input
+            type="color"
+            value={/^#[0-9a-f]{6}$/i.test(color) ? color : "#4dabf7"}
+            onChange={(e) => {
+              setColor(e.target.value);
+              setDirty(true);
+              setSaveWarnings([]);
+            }}
+            title="Pick a custom color"
+            style={{
+              width: 28,
+              height: 22,
+              padding: 0,
+              cursor: "pointer",
+              border: "1px solid var(--l2)",
+              borderRadius: 3,
+              background: "none",
+            }}
+          />
         </span>
       </label>
 
