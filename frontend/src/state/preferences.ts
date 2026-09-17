@@ -53,17 +53,19 @@ interface PreferencesState {
    *  instead of by net. Toggle lets the user flip between the two views
    *  without re-picking colors. Default true (custom colors visible). */
   customNetColorsEnabled: boolean;
-  /** Per-net hidden flag, keyed by `net:<netId>` (same key shape as
-   *  `netColors`). Absent = visible. This is independent of `hiddenKinds`'s
-   *  "net" entry, which hides/shows every net at once — the "Nets" section
-   *  eye toggles that AND resets this map, so the two controls compose into
-   *  a coherent all-or-nothing / per-net visibility model. */
+  /** Per-net visibility override, keyed by `net:<netId>` (same key shape as
+   *  `netColors`). `true` = explicitly hidden, `false` = explicitly shown,
+   *  absent = follow `hiddenKinds`'s "net" entry (the section-wide default).
+   *  A per-net click can override the default in *either* direction — most
+   *  notably, showing a single net back on even while "net" is in
+   *  `hiddenKinds` ("solo" a net after hiding the whole layer). The "Nets"
+   *  section eye stays all-or-nothing: every click flips the "net" kind AND
+   *  resets this map, so hiding is always a clean slate and showing again
+   *  always reveals every net, not just whichever ones had a stale override. */
   hiddenNetIds: Record<string, boolean>;
-  /** Per-cell-type hidden flag, keyed by `cellTypeId` (the same id used in
-   *  `Cell.cellTypeId`). Absent = visible. Mirrors `hiddenNetIds`: the
-   *  "Cells" section eye stays all-or-nothing (hides/shows the whole "cell"
-   *  kind) and resets this map on every click, while each cell-type group
-   *  row gets its own eye for hiding just that type's instances. */
+  /** Per-cell-type visibility override, keyed by `cellTypeId` (the same id
+   *  used in `Cell.cellTypeId`). Same override semantics as `hiddenNetIds`,
+   *  composed against `hiddenKinds`'s "cell" entry instead of "net". */
   hiddenCellTypeIds: Record<string, boolean>;
   /** Global ruler-layer visibility. Unlike `hiddenKinds` (nets/cells), a
    *  ruler isn't an AnnotationKind — it renders via its own overlay — so this
@@ -523,12 +525,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           }),
         setNetHidden: (netId, hidden) =>
           set((state) => {
-            if (!hidden) {
+            const isDefault = hidden === state.hiddenKinds.includes("net");
+            if (isDefault) {
               if (!(netId in state.hiddenNetIds)) return state;
               const { [netId]: _, ...rest } = state.hiddenNetIds;
               return { hiddenNetIds: rest };
             }
-            return { hiddenNetIds: { ...state.hiddenNetIds, [netId]: true } };
+            return { hiddenNetIds: { ...state.hiddenNetIds, [netId]: hidden } };
           }),
         resetHiddenNets: () =>
           set((state) =>
@@ -538,12 +541,13 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           ),
         setCellTypeHidden: (cellTypeId, hidden) =>
           set((state) => {
-            if (!hidden) {
+            const isDefault = hidden === state.hiddenKinds.includes("cell");
+            if (isDefault) {
               if (!(cellTypeId in state.hiddenCellTypeIds)) return state;
               const { [cellTypeId]: _, ...rest } = state.hiddenCellTypeIds;
               return { hiddenCellTypeIds: rest };
             }
-            return { hiddenCellTypeIds: { ...state.hiddenCellTypeIds, [cellTypeId]: true } };
+            return { hiddenCellTypeIds: { ...state.hiddenCellTypeIds, [cellTypeId]: hidden } };
           }),
         resetHiddenCellTypes: () =>
           set((state) =>
@@ -826,14 +830,23 @@ export function selectNetColor(netId: string) {
   return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
 }
 
-/** Helper selector: is this net (keyed by `net:<netId>`) currently visible? */
+/** Helper selector: is this net (keyed by `net:<netId>`) currently visible?
+ *  An explicit per-net override wins; otherwise falls back to whether "net"
+ *  is in `hiddenKinds`. */
 export function selectNetVisible(netId: string) {
-  return (state: PreferencesState) => state.hiddenNetIds[netId] !== true;
+  return (state: PreferencesState) => {
+    const override = state.hiddenNetIds[netId];
+    return override === undefined ? !state.hiddenKinds.includes("net") : !override;
+  };
 }
 
-/** Helper selector: is this cell type currently visible? */
+/** Helper selector: is this cell type currently visible? Same override
+ *  semantics as `selectNetVisible`, composed against "cell" instead. */
 export function selectCellTypeVisible(cellTypeId: string) {
-  return (state: PreferencesState) => state.hiddenCellTypeIds[cellTypeId] !== true;
+  return (state: PreferencesState) => {
+    const override = state.hiddenCellTypeIds[cellTypeId];
+    return override === undefined ? !state.hiddenKinds.includes("cell") : !override;
+  };
 }
 
 /** Helper selector: is this ruler currently visible? Explicit per-ruler

@@ -377,7 +377,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredNets.map((net) => {
           const id = `net:${net.id}`;
           const netColor = netColors[id] ?? globalNetColor;
-          const netVisible = hiddenNetIds[id] !== true;
+          const netOverride = hiddenNetIds[id];
+          const netVisible = netOverride === undefined ? !hiddenKinds.includes("net") : !netOverride;
           return (
             <TreeRow
               key={id}
@@ -431,7 +432,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         filteredCellsByType.map((group) => {
           const groupKey = `cellType:${group.cellType.id}`;
           const open = expandedGroups.includes(groupKey);
-          const cellTypeVisible = hiddenCellTypeIds[group.cellType.id] !== true;
+          const cellTypeOverride = hiddenCellTypeIds[group.cellType.id];
+          const cellTypeVisible = cellTypeOverride === undefined ? !hiddenKinds.includes("cell") : !cellTypeOverride;
           return (
             <div key={groupKey}>
               <TreeRow

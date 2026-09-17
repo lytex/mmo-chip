@@ -923,16 +923,16 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, [annotations]);
   useEffect(() => {
     if (!annotationLayer) return;
-    const ids: string[] = [];
-    for (const id of Object.keys(hiddenNetIds)) {
-      if (hiddenNetIds[id]) ids.push(id);
+    const overrides = new Map<string, boolean>();
+    for (const [id, hidden] of Object.entries(hiddenNetIds)) {
+      overrides.set(id, !hidden);
     }
-    for (const cellTypeId of Object.keys(hiddenCellTypeIds)) {
-      if (!hiddenCellTypeIds[cellTypeId]) continue;
+    for (const [cellTypeId, hidden] of Object.entries(hiddenCellTypeIds)) {
       const cellIds = cellIdsByType.get(cellTypeId);
-      if (cellIds) ids.push(...cellIds);
+      if (!cellIds) continue;
+      for (const cellId of cellIds) overrides.set(cellId, !hidden);
     }
-    annotationLayer.setHiddenIds(ids.length ? new Set(ids) : null);
+    annotationLayer.setIdOverrides(overrides.size ? overrides : null);
   }, [annotationLayer, hiddenNetIds, hiddenCellTypeIds, cellIdsByType]);
 
   // Push selection changes into the annotation layer so its draw highlights.

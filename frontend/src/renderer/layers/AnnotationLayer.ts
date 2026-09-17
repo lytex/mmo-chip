@@ -113,11 +113,13 @@ export class AnnotationLayer implements Layer {
   private invalidateCb: ((rect?: Rect) => void) | null = null;
   /** When non-null, only annotations whose `kind` is in this set are drawn. */
   private visibleKinds: Set<string> | null = null;
-  /** When non-null, annotations whose `id` is in this set are never drawn or
-   *  hit-tested, regardless of `visibleKinds`. Used for per-item visibility
-   *  (e.g. individually hidden nets) layered on top of the kind-level
-   *  all-or-nothing toggle. */
-  private hiddenIds: ReadonlySet<string> | null = null;
+  /** Per-id visibility override, layered on top of `visibleKinds`. `true`
+   *  forces an annotation visible even when its kind is globally hidden;
+   *  `false` forces it hidden even when its kind is visible. An id absent
+   *  from the map falls back to the kind-level default. This is what lets a
+   *  single net/cell-type be "solo'd" back on after the whole layer's
+   *  section eye hid every kind at once. */
+  private idOverrides: ReadonlyMap<string, boolean> | null = null;
   /** Set of currently-selected annotation ids. Passed into `draw` per item. */
   private selectedIds: ReadonlySet<string> = EMPTY_SET;
   /** Last zoom a tile drew at — used to convert the screen-px bleed pad to a
@@ -134,11 +136,21 @@ export class AnnotationLayer implements Layer {
     this.invalidateCb?.();
   }
 
-  /** Pass `null` (or an empty set) to show every id (subject to `visibleKinds`). */
-  setHiddenIds(ids: ReadonlySet<string> | null): void {
-    if (idSetsEqual(this.hiddenIds ?? EMPTY_SET, ids ?? EMPTY_SET)) return;
-    this.hiddenIds = ids && ids.size > 0 ? ids : null;
+  /** Pass `null` (or an empty map) to clear every override (every id falls
+   *  back to its kind's default visibility). */
+  setIdOverrides(overrides: ReadonlyMap<string, boolean> | null): void {
+    if (idOverrideMapsEqual(this.idOverrides ?? EMPTY_MAP, overrides ?? EMPTY_MAP)) return;
+    this.idOverrides = overrides && overrides.size > 0 ? overrides : null;
     this.invalidateCb?.();
+  }
+
+  /** Effective visibility for one annotation: an explicit per-id override
+   *  wins outright (in either direction); otherwise falls back to whether
+   *  its kind is in `visibleKinds`. */
+  private isAnnotationVisible(a: Annotation): boolean {
+    const override = this.idOverrides?.get(a.id);
+    if (override !== undefined) return override;
+    return !this.visibleKinds || this.visibleKinds.has(a.kind);
   }
 
   /** Update the selected set; invalidates so highlight changes redraw. */
@@ -248,15 +260,12 @@ export class AnnotationLayer implements Layer {
       maxX: worldPoint.x + worldTolerance,
       maxY: worldPoint.y + worldTolerance
     });
-    const visible = this.visibleKinds;
-    const hidden = this.hiddenIds;
     let best: AnnotationHit | null = null;
     let bestPriority = -Infinity;
     let bestArea = Infinity;
     for (const c of candidates) {
       const a = c.annotation;
-      if (visible && !visible.has(a.kind)) continue;
-      if (hidden && hidden.has(a.id)) continue;
+      if (!this.isAnnotationVisible(a)) continue;
       const partId = a.hitTest
         ? a.hitTest(worldPoint, worldTolerance)
         : pointInRectTolerant(worldPoint, a.bbox, worldTolerance)
@@ -290,12 +299,10 @@ export class AnnotationLayer implements Layer {
       maxX: worldRect.x + worldRect.width,
       maxY: worldRect.y + worldRect.height
     });
-    const visible = this.visibleKinds;
-    const hidden = this.hiddenIds;
     const out: Annotation[] = [];
     for (const c of candidates) {
       const a = c.annotation;
-      if (visible && !visible.has(a.kind)) continue;
+      if (!this.isAnnotationVisible(a)) continue;
       if (
         fullyContained &&
         !a.rectPickParts &&
@@ -320,11 +327,10 @@ export class AnnotationLayer implements Layer {
       maxX: worldRect.x + worldRect.width,
       maxY: worldRect.y + worldRect.height
     });
-    const visible = this.visibleKinds;
     const out: string[] = [];
     for (const c of candidates) {
       const a = c.annotation;
-      if (visible && !visible.has(a.kind)) continue;
+      if (!this.isAnnotationVisible(a)) continue;
       if (
         fullyContained &&
         !a.rectPickParts &&
@@ -355,8 +361,7 @@ export class AnnotationLayer implements Layer {
       maxX: bounds.world.x + bounds.world.width + m,
       maxY: bounds.world.y + bounds.world.height + m
     });
-    const visible = this.visibleKinds;
-    const hidden = this.hiddenIds;
+    const isVisible = (a: Annotation) => this.isAnnotationVisible(a);
     const selected = this.selectedIds;
     const isSelected = (id: string) => selected.has(id);
     const state: AnnotationDrawState = { selected: false, isSelected };
@@ -374,8 +379,7 @@ export class AnnotationLayer implements Layer {
     // Non-nets (cells, pins, etc.) — draw in drawOrder.
     nonNets.sort((a, b) => (a.annotation.drawOrder ?? 0) - (b.annotation.drawOrder ?? 0));
     for (const h of nonNets) {
-      if (visible && !visible.has(h.annotation.kind)) continue;
-      if (hidden && hidden.has(h.annotation.id)) continue;
+      if (!isVisible(h.annotation)) continue;
       state.selected = selected.has(h.annotation.id);
       h.annotation.draw(ctx, bounds, state);
     }
@@ -383,8 +387,7 @@ export class AnnotationLayer implements Layer {
     // Vias — body only (fill/stroke, no labels)
     const viaBodyState: AnnotationDrawState = { ...state, pass: "body" };
     for (const h of vias) {
-      if (visible && !visible.has(h.annotation.kind)) continue;
-      if (hidden && hidden.has(h.annotation.id)) continue;
+      if (!isVisible(h.annotation)) continue;
       viaBodyState.selected = selected.has(h.annotation.id);
       h.annotation.draw(ctx, bounds, viaBodyState);
     }
@@ -398,8 +401,7 @@ export class AnnotationLayer implements Layer {
     for (const layer of LAYER_PASSES) {
       const layerState: AnnotationDrawState = { ...state, layerFilter: layer };
       for (const h of nets) {
-        if (visible && !visible.has(h.annotation.kind)) continue;
-        if (hidden && hidden.has(h.annotation.id)) continue;
+        if (!isVisible(h.annotation)) continue;
         layerState.selected = selected.has(h.annotation.id);
         h.annotation.draw(ctx, bounds, layerState);
       }
@@ -408,8 +410,7 @@ export class AnnotationLayer implements Layer {
     // Via labels — on top of everything (nets + via bodies).
     const viaLabelState: AnnotationDrawState = { ...state, pass: "label" };
     for (const h of vias) {
-      if (visible && !visible.has(h.annotation.kind)) continue;
-      if (hidden && hidden.has(h.annotation.id)) continue;
+      if (!isVisible(h.annotation)) continue;
       viaLabelState.selected = selected.has(h.annotation.id);
       h.annotation.draw(ctx, bounds, viaLabelState);
     }
@@ -431,11 +432,19 @@ export class AnnotationLayer implements Layer {
 const ANNOTATION_BLEED_PX = 80;
 
 const EMPTY_SET: ReadonlySet<string> = new Set();
+const EMPTY_MAP: ReadonlyMap<string, boolean> = new Map();
 
 function idSetsEqual(a: ReadonlySet<string>, b: ReadonlySet<string>): boolean {
   if (a === b) return true;
   if (a.size !== b.size) return false;
   for (const id of a) if (!b.has(id)) return false;
+  return true;
+}
+
+function idOverrideMapsEqual(a: ReadonlyMap<string, boolean>, b: ReadonlyMap<string, boolean>): boolean {
+  if (a === b) return true;
+  if (a.size !== b.size) return false;
+  for (const [id, value] of a) if (b.get(id) !== value) return false;
   return true;
 }
 
