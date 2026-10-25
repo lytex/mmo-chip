@@ -61,7 +61,21 @@ const INSTRUCTIONS =
   "read-only except, when a user enabled it for that die: markup (comments, floorplan regions, rulers) " +
   "and, behind a separate switch, wires and vias — or everything with full edits. get_die_info says " +
   "what is currently allowed. render_annotated_image draws the layout with annotations, highlights and " +
-  "your own marks; attach such a render to a comment with add_comment's `image` to show people what you mean.";
+  "your own marks; attach such a render to a comment with add_comment's `image` to show people what you mean.\n\n" +
+  "How to present findings: write like Ken Shirriff's die-photo teardowns on righto.com — a readable, " +
+  "ELI5 article, not a data dump. Start with the big picture (what the chip or block does and why it " +
+  "matters), then walk through the circuit step by step, explaining every term the first time it shows up " +
+  "(what a transistor, a current mirror or a diffusion layer is and how to spot one in the photo). " +
+  "Interleave prose with pictures: after each idea, show it. Use render_annotated_image with highlights " +
+  "and your own boxes, arrows and short labels to make one figure per point, each with a caption that says " +
+  "what to look at; zoom from the whole die down to the detail you are explaining. Add schematic or " +
+  "block diagrams (SVG, Mermaid or similar) that map the layout to the circuit, and label them with the " +
+  "same names used in the photos. If your client can produce a document, page or artifact, deliver the " +
+  "write-up there as one illustrated article; otherwise use Markdown with the images inline. " +
+  "Pixel coordinates are for tool calls only — never put them in your answer. People cannot read " +
+  "\"(1234, 567)\"; point at things with the labels and arrows in your figures and with landmarks " +
+  "(\"the large transistor below the top-left bond pad\", \"the comparator in the middle of the die\"). " +
+  "When you can write markup, pin your figures to the die with add_comment so readers can jump to the spot.";
 
 interface JsonRpcMessage {
   jsonrpc?: string;
