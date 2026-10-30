@@ -15,6 +15,9 @@ export const config: {
   tileConcurrency: number;
   mlSidecarUrl: string;
   mlPredictPad: number;
+  /** Absolute path to the built frontend (`frontend/dist`) served by Express.
+   *  Empty in dev (Vite dev server owns the UI); set by the desktop shell. */
+  frontendDist: string;
 } = {
   port: Number(process.env.PORT ?? 3001),
   dataRoot: process.env.CHIPTOOL_DATA_ROOT ?? defaultDataRoot,
@@ -23,5 +26,6 @@ export const config: {
     parsedLimitInputPixels === undefined ? false : Number(parsedLimitInputPixels),
   tileConcurrency: Number(process.env.CHIPTOOL_TILE_CONCURRENCY ?? defaultTileConcurrency()),
   mlSidecarUrl: process.env.CHIPTOOL_ML_SIDECAR_URL ?? "http://127.0.0.1:8001",
-  mlPredictPad: Number(process.env.CHIPTOOL_ML_PREDICT_PAD ?? 128)
+  mlPredictPad: Number(process.env.CHIPTOOL_ML_PREDICT_PAD ?? 128),
+  frontendDist: process.env.CHIPTOOL_FRONTEND_DIST ?? ""
 };

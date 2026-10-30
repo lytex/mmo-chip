@@ -1,0 +1,56 @@
+name: desktop
+
+# Desktop binary builds: Electron shell + staged Node backend + bundled sims.
+# Triggered manually or by a desktop-v* tag; artifacts per OS in
+# desktop/build/dist/* (win: zip of the unpacked app; linux: AppImage + deb).
+on:
+  workflow_dispatch:
+  push:
+    tags: ["desktop-v*"]
+
+jobs:
+  build:
+    name: ${{ matrix.os }}
+    runs-on: ${{ matrix.os }}
+    strategy:
+      fail-fast: false
+      matrix:
+        os: [windows-latest, ubuntu-latest]
+    env:
+      ELECTRON_CACHE: ${{ github.workspace }}/desktop/.electron-cache
+      ELECTRON_BUILDER_CACHE: ${{ github.workspace }}/desktop/.electron-builder-cache
+    steps:
+      - uses: actions/checkout@v4
+
+      - uses: actions/setup-node@v4
+        with:
+          node-version: 22
+          cache: npm
+
+      - name: Install desktop tooling
+        run: npm install --prefix desktop
+
+      - name: Rust toolchain (launcher + vyges-lvs)
+        uses: actions-rust-lang/setup-rust-toolchain@v1
+        with:
+          toolchain: stable
+
+      - name: cargo install vyges-lvs (Linux, optional)
+        if: runner.os == 'Linux'
+        continue-on-error: true
+        run: cargo install vyges-lvs
+
+      - name: Build + package (Windows)
+        if: runner.os == 'Windows'
+        run: npm run desktop:build:win
+
+      - name: Build + package (Linux)
+        if: runner.os == 'Linux'
+        run: npm run desktop:build:linux
+
+      - name: Upload artifacts
+        uses: actions/upload-artifact@v4
+        with:
+          name: mmo-chip-desktop-${{ matrix.os }}
+          path: desktop/build/dist/*
+          if-no-files-found: error

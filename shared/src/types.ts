@@ -2181,6 +2181,136 @@ export interface McpStatus {
   redo: McpHistoryItem[];
 }
 
+// ── MCP ask_user prompts (agent questions answered in the GUI) ────
+// `ask_user` registers a prompt, the GUI shows it as a modal, the MCP call
+// stays open until the user answers, dismisses or the prompt times out.
+
+export interface McpPromptImage {
+  /** Position inside prompt.evidence.images (assigned by the backend). */
+  index: number;
+  label: string;
+  width: number;
+  height: number;
+  /** Inline JPEG data URL, already sized for the modal. */
+  dataUrl: string;
+  caption?: string;
+}
+
+export interface McpPromptNetlist {
+  title?: string;
+  text: string;
+}
+
+export interface McpPromptStatMetric {
+  label: string;
+  value: string;
+  hint?: string;
+}
+
+/** Simulation / layout numbers: a metric list, a small table, or both. */
+export interface McpPromptStats {
+  title?: string;
+  metrics?: McpPromptStatMetric[];
+  columns?: string[];
+  rows?: Array<Array<string | number | null>>;
+}
+
+export interface McpPromptEvidence {
+  images?: McpPromptImage[];
+  netlist?: McpPromptNetlist;
+  stats?: McpPromptStats;
+  /** Bullet lines, e.g. what the client already ruled out. */
+  notes?: string[];
+}
+
+export type McpPromptOptionRole = "approve" | "reject" | "cancel" | "neutral";
+export type McpPromptOptionTone = "primary" | "danger" | "neutral";
+
+export interface McpPromptOption {
+  id: string;
+  label: string;
+  description?: string;
+  /** approve/reject decide the answer's `approved`; cancel dismisses. */
+  role?: McpPromptOptionRole;
+  tone?: McpPromptOptionTone;
+}
+
+export type McpPromptFieldType = "text" | "number" | "select" | "boolean";
+
+export interface McpPromptFieldOption {
+  value: string;
+  label: string;
+}
+
+export interface McpPromptField {
+  id: string;
+  label: string;
+  type: McpPromptFieldType;
+  default?: string | number | boolean;
+  /** Select fields only. */
+  options?: McpPromptFieldOption[];
+  placeholder?: string;
+  required?: boolean;
+  hint?: string;
+}
+
+export type McpPromptKind = "confirm" | "choose" | "text" | "review";
+
+/** A question an MCP client holds open through `ask_user`. */
+export interface McpUserPrompt {
+  id: string;
+  dieId: string;
+  dieName: string;
+  /** clientInfo.name the MCP client sent on initialize, if any. */
+  clientName: string | null;
+  /** ISO timestamps. */
+  createdAt: string;
+  expiresAt: string;
+  question: string;
+  detail?: string;
+  kind: McpPromptKind;
+  options: McpPromptOption[];
+  fields?: McpPromptField[];
+  allowFreeText: boolean;
+  multiSelect: boolean;
+  evidence?: McpPromptEvidence;
+  /** Echoed back untouched; ask_user never writes it. */
+  proposal?: unknown;
+}
+
+/** One pending prompt, as listed for the GUI. */
+export interface McpUserPromptEntry {
+  dieId: string;
+  dieName: string;
+  prompt: McpUserPrompt;
+}
+
+/** What the GUI sends back as the answer. */
+export interface McpPromptAnswerInput {
+  optionId?: string;
+  optionIds?: string[];
+  text?: string | null;
+  fields?: Record<string, string | number | boolean>;
+}
+
+/** The outcome handed to the waiting MCP call. */
+export interface McpPromptResult {
+  promptId: string;
+  answered: boolean;
+  /** "timeout" | "cancelled" when not answered. */
+  reason?: string;
+  optionId: string | null;
+  optionIds: string[];
+  labels: string[];
+  text: string | null;
+  fields: Record<string, string | number | boolean>;
+  approved: boolean | null;
+  answeredBy: string | null;
+  answeredAt: string | null;
+  elapsedMs: number;
+  proposal?: unknown;
+}
+
 // ── Silicon process (layers below metal 1) ────────────────────────
 
 export type Polarity = "n" | "p";

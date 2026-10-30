@@ -1,17 +1,65 @@
 import { useEffect } from "react";
 import { useQuery, useQueryClient } from "@tanstack/react-query";
-import type { McpAccessEntry, McpHistoryItem, McpStatus, McpWriteMode } from "shared";
+import type {
+  McpAccessEntry,
+  McpHistoryItem,
+  McpPromptAnswerInput,
+  McpPromptResult,
+  McpStatus,
+  McpUserPromptEntry,
+  McpWriteMode
+} from "shared";
 import { annotationKeys } from "./annotations";
 import { subscribeGlobal, subscribeToDie } from "./annotationsWebSocket";
 import { apiGet, apiPost, apiPut } from "./client";
 
 export const mcpKeys = {
   forDie: (dieId: string) => ["mcp", dieId] as const,
-  access: ["mcp-access"] as const
+  access: ["mcp-access"] as const,
+  prompts: ["mcp-prompts"] as const
 };
 
 export function getMcpAccess(signal?: AbortSignal): Promise<{ endpointPath: string; dies: McpAccessEntry[] }> {
   return apiGet(`/api/mcp/access`, signal);
+}
+
+/** Pending ask_user prompts, oldest first. */
+export function getMcpPrompts(signal?: AbortSignal): Promise<{ prompts: McpUserPromptEntry[] }> {
+  return apiGet(`/api/mcp/prompts`, signal);
+}
+
+/** Answer a prompt: options, free text and/or filled fields. */
+export function answerMcpPrompt(
+  id: string,
+  input: { optionIds?: string[]; optionId?: string; text?: string | null; fields: Record<string, string | number | boolean> }
+): Promise<{ result: McpPromptResult }> {
+  return apiPost(`/api/mcp/prompts/${id}/answer`, input);
+}
+
+/** Dismiss a prompt (the MCP call resolves as not answered). */
+export function cancelMcpPrompt(id: string): Promise<{ ok: true }> {
+  return apiPost(`/api/mcp/prompts/${id}/cancel`, {});
+}
+
+/**
+ * Prompt queue, refreshed by the server's `mcp/prompts` broadcast (a prompt
+ * asked, answered, dismissed or timed out), with a slow poll as fallback so
+ * expiry countdowns settle even without a broadcast.
+ */
+export function useMcpPrompts() {
+  const qc = useQueryClient();
+  useEffect(
+    () =>
+      subscribeGlobal((msg) => {
+        if (msg.type === "mcp/prompts") void qc.invalidateQueries({ queryKey: mcpKeys.prompts });
+      }),
+    [qc]
+  );
+  return useQuery({
+    queryKey: mcpKeys.prompts,
+    queryFn: ({ signal }) => getMcpPrompts(signal),
+    refetchInterval: 30_000
+  });
 }
 
 /** Approve or deny MCP clients' access to a die. */

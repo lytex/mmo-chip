@@ -21,6 +21,7 @@ import type { AuthPayload } from "./types.js";
  *                      { "type": "user/status",  "userId": "<id>", "dieId": "<id>|null",
  *                                                          "tool": "<tool>|null" }
  *                      { "type": "mcp/access" }   (any die's MCP access changed)
+ *                      { "type": "mcp/prompts" }  (ask_user prompt queue changed)
  *                      { "type": "pong" }
  *
  * Auth: token in query string (`?token=<jwt>`). Invalid token → connection closed.
@@ -37,6 +38,7 @@ type ServerMessage =
   | { type: "user/offline"; userId: string }
   | { type: "user/status"; userId: string; dieId: string | null; tool: string | null }
   | { type: "mcp/access" }
+  | { type: "mcp/prompts" }
   | { type: "pong" };
 
 type ClientMessage =
@@ -61,6 +63,8 @@ export interface AnnotationBroadcaster {
   emitMLJob(job: MLInferenceJob): void;
   /** Tell every client that an MCP access request / decision changed. */
   emitMcpAccess(): void;
+  /** Tell every client that the pending ask_user prompt queue changed. */
+  emitMcpPrompts(): void;
   /** Push a cell-detection job-state change to subscribed clients. */
   emitCellJob(job: CellDetectionJob): void;
   /** Push a cell-imaging (specimens / wire map) job-state change. */
@@ -217,6 +221,9 @@ export function attachWebSocketBroadcaster(
     },
     emitMcpAccess() {
       broadcast({ type: "mcp/access" }, null);
+    },
+    emitMcpPrompts() {
+      broadcast({ type: "mcp/prompts" }, null);
     },
     emitCellJob(job) {
       for (const sub of subscriptions.values()) {

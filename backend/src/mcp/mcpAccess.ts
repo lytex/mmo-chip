@@ -2,8 +2,6 @@ import { EventEmitter } from "node:events";
 import { promises as fs } from "node:fs";
 import path from "node:path";
 import type { McpAccessState, McpDieAccess } from "shared";
-import { resolveProjectDir } from "../projectLayout.js";
-import { listDieRecords } from "../store.js";
 
 /**
  * Which dies MCP clients may use, stored as `<dataRoot>/mcp-access.json`.
@@ -39,29 +37,8 @@ async function readFile(dataRoot: string): Promise<AccessFile> {
     return { version: 1, dies: raw.dies ?? {} };
   } catch (error) {
     if ((error as NodeJS.ErrnoException).code !== "ENOENT") throw error;
-    return { version: 1, dies: await legacyApprovals(dataRoot) };
+    return { version: 1, dies: {} };
   }
-}
-
-/**
- * Before the global endpoint, each die had its own `/mcp/<dieId>` URL (now
- * removed). Dies whose MCP settings were touched or that MCP wrote to (they
- * have an `mcp.json`) count as already accessed, so they stay usable without
- * a prompt.
- */
-async function legacyApprovals(dataRoot: string): Promise<Record<string, McpDieAccess>> {
-  const dies: Record<string, McpDieAccess> = {};
-  const at = new Date().toISOString();
-  for (const record of await listDieRecords(dataRoot).catch(() => [])) {
-    try {
-      const { dir } = await resolveProjectDir(dataRoot, record.id);
-      await fs.access(path.join(dir, "mcp.json"));
-      dies[record.id] = { state: "approved", at, clientName: null };
-    } catch {
-      // never used over MCP
-    }
-  }
-  return dies;
 }
 
 async function writeFile(dataRoot: string, file: AccessFile): Promise<void> {

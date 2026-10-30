@@ -159,15 +159,35 @@ function buildNetlist(args: SpiceSimToolArgs): string {
  */
 async function resolveBinary(binPath?: string): Promise<string> {
   const requested = binPath ?? SPICE_BIN;
-  if (!/\.exe$/i.test(requested)) return requested;
-  if (!/ngspice\.exe$/i.test(requested)) return requested;
-  const consoleBin = join(dirname(requested), "ngspice_con.exe");
-  try {
-    await access(consoleBin);
-    return consoleBin;
-  } catch {
-    return requested;
+  // The MCP endpoint does not pass the frontend preference (ngspicePath), so
+  // a Windows installation is otherwise invisible unless its directory is on
+  // PATH.  Prefer the console build, which exposes stdout/stderr to Node.
+  const candidates = [requested];
+  if (process.platform === "win32" && !/[/\\]/.test(requested)) {
+    candidates.push(
+      join(process.env.ProgramFiles ?? "C:\\Program Files", "Spice64", "bin", "ngspice_con.exe"),
+      join(process.env.ProgramFiles ?? "C:\\Program Files", "Spice64", "bin", "ngspice.exe")
+    );
   }
+
+  for (const candidate of candidates) {
+    if (!/\.exe$/i.test(candidate)) continue;
+    if (!/ngspice(?:_con)?\.exe$/i.test(candidate)) return candidate;
+    const consoleBin = join(dirname(candidate), "ngspice_con.exe");
+    try {
+      await access(consoleBin);
+      return consoleBin;
+    } catch {
+      try {
+        await access(candidate);
+        return candidate;
+      } catch {
+        // Try the next configured/default location.
+      }
+    }
+  }
+
+  return requested;
 }
 
 /** Lines from ngspice's output that look like a real problem. */

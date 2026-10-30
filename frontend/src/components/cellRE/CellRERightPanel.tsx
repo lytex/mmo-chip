@@ -135,6 +135,8 @@ export function CellRERightPanel({
     extraction && extraction.kind === "inferred"
       ? (extraction as InferredCellExtraction)
       : null;
+  const analogDevices = inferred?.analogDevices ?? [];
+  const hasAnalogDevices = analogDevices.length > 0;
 
   const activeCellTypeId = useCellREStore((s) => s.activeCellTypeId);
 
@@ -334,6 +336,40 @@ export function CellRERightPanel({
         onRename={onRename}
       />
       <div style={{ overflow: "auto", flex: "1 1 auto", minHeight: 0 }}>
+        {hasAnalogDevices && (
+          <Section title="Analog Device Extractor" count={analogDevices.length}>
+            <List>
+              {analogDevices.map((ad) => (
+                <AnalogDeviceRow
+                  key={ad.id}
+                  device={ad}
+                  cellTypeId={activeCellTypeId ?? ""}
+                  onOverride={(deviceKey, param, value) => {
+                    const templateUuid = (ad as any)._templateUuid as string | undefined;
+                    if (templateUuid) setDeviceOverride(templateUuid, param, value);
+                    usePreferences.setState((s: any) => ({
+                      analogOverrides: {
+                        ...(s.analogOverrides ?? {}),
+                        [activeCellTypeId ?? ""]: {
+                          ...((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {}),
+                          [deviceKey]: {
+                            ...(((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {})[deviceKey] ?? {}),
+                            [param]: value,
+                          },
+                        },
+                      },
+                    }));
+                  }}
+                />
+              ))}
+            </List>
+          </Section>
+        )}
+        <Section
+          title="Digital StdCell Extractor"
+          count={null}
+          defaultOpen={!hasAnalogDevices}
+        >
         {inferred && inferred.warnings.length > 0 && (
           <WarningsSection warnings={inferred.warnings} bind={bind} />
         )}
@@ -463,42 +499,7 @@ export function CellRERightPanel({
             <Empty>none detected</Empty>
           )}
         </Section>
-        {inferred && inferred.analogDevices && inferred.analogDevices.length > 0 && (
-          <Section title="Analog Devices" count={inferred.analogDevices.length}>
-            <List>
-              {inferred.analogDevices.map((ad) => (
-                <AnalogDeviceRow
-                  key={ad.id}
-                  device={ad}
-                  cellTypeId={activeCellTypeId ?? ""}
-                  onOverride={(deviceKey, param, value) => {
-                    const templateUuid = (ad as any)._templateUuid as string | undefined;
-                    if (templateUuid) {
-                      setDeviceOverride(templateUuid, param, value);
-                    }
-                    // Mirror into legacy preferences.analogOverrides for
-                    // first-run migration; subsequent runs read from the
-                    // registry. The legacy entry is keyed by the old
-                    // (cellTypeId, _cellLevelKey) tuple so the apply path
-                    // can find it before the device gets a UUID.
-                    usePreferences.setState((s: any) => ({
-                      analogOverrides: {
-                        ...(s.analogOverrides ?? {}),
-                        [activeCellTypeId ?? ""]: {
-                          ...((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {}),
-                          [deviceKey]: {
-                            ...(((s.analogOverrides ?? {})[activeCellTypeId ?? ""] ?? {})[deviceKey] ?? {}),
-                            [param]: value,
-                          },
-                        },
-                      },
-                    }));
-                  }}
-                />
-              ))}
-            </List>
-          </Section>
-        )}
+        </Section>
       </div>
   
       {selectedResistorInfo && (() => {
@@ -1579,6 +1580,9 @@ function Section({
   defaultOpen?: boolean;
 }) {
   const [open, setOpen] = useState(defaultOpen);
+  useEffect(() => {
+    setOpen(defaultOpen);
+  }, [defaultOpen]);
   return (
     <div style={{ borderBottom: "1px solid var(--l2)" }}>
       <button

@@ -5,15 +5,20 @@
   "workspaces": [
     "shared",
     "frontend",
-    "backend",
-    "mcp"
+    "backend"
   ],
   "scripts": {
     "sidecar": "node scripts/run_sidecar.js",
     "dev": "concurrently -n be,fe,sc \"npm run dev -w backend\" \"npm run dev -w frontend\" \"npm run sidecar\"",
     "build": "npm run build -w backend && npm run build -w frontend",
     "mcpb": "npx -y @anthropic-ai/mcpb pack tools/mcpb dist/mmo-chip.mcpb",
-    "test": "npm run test -w backend && npm run test -w frontend"
+    "test": "npm run test -w backend && npm run test -w frontend",
+    "desktop:setup": "npm i --prefix desktop",
+    "desktop:stage": "node scripts/stage-desktop.mjs",
+    "desktop:bins": "node scripts/fetch-desktop-bins.mjs",
+    "desktop:start": "npm run --prefix desktop start",
+    "desktop:build:win": "npm run build && npm run desktop:stage && npm run desktop:bins && npm run --prefix desktop pkg:win",
+    "desktop:build:linux": "npm run build && npm run desktop:stage && npm run desktop:bins && npm run --prefix desktop pkg:linux"
   },
   "devDependencies": {
     "@types/adm-zip": "^0.5.8",

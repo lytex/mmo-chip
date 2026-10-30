@@ -18,7 +18,10 @@ import { spawn } from "node:child_process";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 
-const REPO_ROOT = path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
+const REPO_ROOT = process.env.CHIPTOOL_APP_ROOT
+  ? path.resolve(process.env.CHIPTOOL_APP_ROOT)
+  // Repo layout in dev; mirrored under resources/app in the desktop build.
+  : path.resolve(path.dirname(fileURLToPath(import.meta.url)), "..", "..");
 const SCRIPT = path.join(REPO_ROOT, "scripts", "netlist-export.ts");
 
 /** Generous: WASM load + full-die extraction. */

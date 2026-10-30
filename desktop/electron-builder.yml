@@ -1,0 +1,60 @@
+# electron-builder config for the mmo-chip desktop shell.
+# Run from the repo root: scripts/build-desktop.mjs stages build/staging/resources,
+# then `electron-builder` here packages app.asar + extraResources.
+appId: dev.flxkrlv.mmo-chip
+productName: mmo-chip
+copyright: BSD-3-Clause
+
+directories:
+  output: build/dist
+
+# The asar only carries the shell; everything that runs lives in extraResources.
+files:
+  - main.cjs
+  - preload.cjs
+  - package.json
+
+asar: true
+
+afterPack: ../scripts/desktop-after-pack.cjs
+
+extraResources:
+  - from: build/staging/resources/app
+    to: app
+  - from: build/staging/resources/bin
+    to: bin
+    # bin/ is optional in dev staging; missing source dirs are skipped.
+
+# Optional ML-plugin installers, at the packaged app root next to the exe:
+# a zip user runs setup_ml.ps1/.sh (or double-clicks setup_ml.bat) to add
+# the ML sidecar without a repo checkout. See docs/DESKTOP_BUILD.md.
+extraFiles:
+  - from: build/staging/setup_ml.ps1
+    to: setup_ml.ps1
+  - from: build/staging/setup_ml.sh
+    to: setup_ml.sh
+  - from: build/staging/setup_ml.bat
+    to: setup_ml.bat
+
+# Windows: plain zip of the unpacked app (no installer). NSIS portable/nsis
+# targets hit makensis mmap failures with 100 MB+ payloads on some machines —
+# add `nsis` back explicitly (npx electron-builder --win nsis) when needed.
+win:
+  target:
+    - zip
+  signAndEditExecutable: false
+
+linux:
+  target:
+    - AppImage
+    - deb
+  category: Science
+  maintainer: flxkrlv
+  artifactName: ${productName}-${version}-${arch}.${ext}
+
+deb:
+  artifactName: mmo-chip-${version}-${arch}.deb
+  depends:
+    - libgtk-3-0
+    - libnss3
+    - libasound2

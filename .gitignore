@@ -14,3 +14,12 @@ memory/.dreams/
 docs/lvs_rules_examples/
 LV2_16.png
 docs/debug/
+desktop/node_modules/
+desktop/build/
+dist/
+desktop/.electron-cache/
+desktop/.electron-builder-cache/
+desktop/testapp/
+desktop/package-lock.json
+desktop/launcher/target/
+desktop/electron-scratch/

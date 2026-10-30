@@ -109,7 +109,10 @@ export function topVisibleOverlaySourceId(): string | undefined {
   const layers = useOverlayLayers.getState().layers;
   for (let index = layers.length - 1; index >= 0; index -= 1) {
     const layer = layers[index];
-    if (!layer.hidden && layer.opacity > 0 && layer.loaded && layer.serverFilename) return layer.serverFilename;
+    // A manifest-backed source can be selected before its tile pyramid is
+    // ready. Crop endpoints can still render from the original image, and the
+    // selector should not silently fall back to another layer in that case.
+    if (!layer.hidden && layer.opacity > 0 && layer.serverFilename) return layer.serverFilename;
   }
   return undefined;
 }

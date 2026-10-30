@@ -42,6 +42,8 @@ import { CELL_RE_HOTKEYS } from "../lib/hotkeys";
 import { ShortcutsPanel } from "../components/dieViewer/ShortcutsPanel";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../state/overlayLayers";
+import { OverlayLayerSelector } from "../components/OverlayLayerSelector";
+import { useAutoLoadOverlayLayers } from "../lib/useAutoLoadOverlayLayers";
 import {
   PASTE_OFFSET,
   resolveActiveCell,
@@ -68,6 +70,7 @@ import {
   buildUnmatchAction,
   cellTypeById,
   cellTypeCropUrl,
+  cellCropUrl,
   membersOf,
   orientOf,
   rotateView
@@ -140,6 +143,7 @@ function RE({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  useAutoLoadOverlayLayers(dieId);
   const overlayLayers = useOverlayLayers((s) => s.layers);
   const previewOverlaySourceId = useMemo(
     () => topVisibleOverlaySourceId(),
@@ -795,6 +799,16 @@ function RE({ dieId }: { dieId: string }) {
     : !cell && cellType
       ? (foreignImageUrl ?? cellTypeCropUrl(dieId, cellType, previewOverlaySourceId))
       : null;
+  // Tiled overlays are not decoded into an HTMLImageElement in the browser.
+  // Use the same server crop path as Merge Cells so folder-backed projects
+  // render the selected layer instead of falling through to an empty canvas.
+  const selectedOverlayImageUrl = previewOverlaySourceId
+    ? cell
+      ? cellCropUrl(dieId, cell, previewOverlaySourceId)
+      : cellType
+        ? cellTypeCropUrl(dieId, cellType, previewOverlaySourceId)
+        : imageUrl
+    : imageUrl;
   const cellInstanceCount = cellType
     ? membersOf(annotations!, cellType.id).length
     : 0;
@@ -821,26 +835,7 @@ function RE({ dieId }: { dieId: string }) {
       <SubBar
         right={
           <>
-            <button
-              className="btn"
-              disabled
-              title="Base image (one per die for now)"
-              style={{ maxWidth: 220 }}
-            >
-              {Ic.image}
-              <span
-                className="m"
-                style={{
-                  fontSize: 10.5,
-                  marginLeft: 4,
-                  overflow: "hidden",
-                  textOverflow: "ellipsis"
-                }}
-              >
-                {baseImageName}
-              </span>
-              {Ic.caret}
-            </button>
+            <OverlayLayerSelector baseName={baseImageName} />
             <ToolDivider />
             <PanelToggle side="right" collapsed={rightCollapsed} onClick={toggleRight} />
           </>
@@ -1011,8 +1006,8 @@ function RE({ dieId }: { dieId: string }) {
                 // An instance on another die: its die's tiles, at the ratio.
                 die={(remoteCell ? remoteDie : die) ?? null}
                 cellScale={remoteCell?.ratio ?? 1}
-                imageUrl={imageUrl}
-                imageCanonical={cleanSpecimen !== null}
+                 imageUrl={selectedOverlayImageUrl}
+                 imageCanonical={cleanSpecimen !== null || previewOverlaySourceId !== undefined}
                 // The die overlay (wires / vias drawn on the die) belongs to
                 // one physical instance; over the type's median image it
                 // would point at pixels that aren't there.

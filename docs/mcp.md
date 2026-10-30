@@ -1,195 +1,120 @@
-# MCP server (`mcp/`)
+# MCP server (`/mcp`)
 
-A [Model Context Protocol](https://modelcontextprotocol.io) server that exposes this
-app's REST API to external agents (opencode, Claude Code, any MCP client). It is a thin,
-stateless wrapper: every call goes to the running backend on `localhost:3001`, the same
-routes the UI uses. The in-app assistant is untouched — the two sit side by side.
+The app serves a [Model Context Protocol](https://modelcontextprotocol.io) endpoint
+directly from the backend: **`POST /mcp`**, Streamable HTTP with JSON responses (no
+server-initiated SSE stream). There is no separate stdio server any more; `list_dies`
+returns every project, and every other tool takes a `dieId`.
 
 ```
-agent  --stdio/MCP-->  mcp/src/server.ts  --HTTP-->  backend :3001  -->  project data
+MCP client  --HTTP POST /mcp-->  backend :3001  -->  project data
 ```
 
-## Quick start
+## Connect
 
-```bash
-npm run dev                 # backend must be up (port 3001)
+The endpoint is shown in the die viewer's **MCP** tab. For local development it is
+`http://127.0.0.1:3001/mcp`.
 
-# one-shot check: spawns the server, lists tools, calls list_projects
-npm run smoke -w mcp
+- **Claude Code**: `claude mcp add --transport http mmo-chip http://127.0.0.1:3001/mcp`
+- **opencode**: `opencode.json` in the repo root already points at it as a remote server.
+- **Claude Desktop**: `npm run mcpb` builds `dist/mmo-chip.mcpb`; install it and paste the
+  endpoint into the extension settings.
+- **Auth**: only needed when the backend runs with `JWT_SECRET`. Send the login token as
+  `Authorization: Bearer …` (MCPB asks for it, Claude Code accepts headers).
 
-# manual run (stdio; logs go to stderr only)
-node --import tsx mcp/src/server.ts
-```
+The first call on a die nobody approved yet becomes **pending** and waits up to 50 seconds
+for a user decision in the GUI (`McpAccessPrompt`). Approve/Deny is per die and persists in
+`<dataRoot>/mcp-access.json`. `list_dies` reports `not_requested`, `pending`, `approved` or
+`denied`.
 
-opencode picks the server up from `opencode.json` in the repo root:
-
-```json
-{
-  "mcp": {
-    "mmo-chip": {
-      "type": "local",
-      "command": ["node", "--import", "tsx", "mcp/src/server.ts"],
-      "timeout": 20000,
-      "enabled": true,
-      "environment": { "MMO_BASE_URL": "http://127.0.0.1:3001" }
-    }
-  }
-}
-```
-
-Then prompt with e.g. `list the mmo-chip projects and summarise the annotations of the
-first one`.
-
-## Environment
-
-| Variable | Default | Meaning |
-| --- | --- | --- |
-| `MMO_BASE_URL` | `http://127.0.0.1:3001` | Backend origin |
-| `MMO_TOKEN` | *(unset)* | Bearer token; only needed if the backend runs with `JWT_SECRET` set (writes are protected, public GETs are not) |
-| `MMO_AGENT_NAME` | `mcp-agent` | Name stamped on comments/floorplans this agent authors |
-| `MMO_CROPS_DIR` | `<os tmp>/mmo-crops` | Where `get_crop` writes images (files >24 h are swept at startup) |
-| `MMO_EXPORT_DIR` | `<os tmp>/mmo-exports` | Where `export_project` writes ZIPs when no `outPath` is given |
-
-## Tools (25)
+## Tools (36)
 
 **Read**
 
 | Tool | Does |
 | --- | --- |
-| `list_projects` | Every die: id, name, image size, cell library/scale, location, availability. Start here for `dieId`s. |
-| `get_project` | One project's full record (geometry, progress, location). |
-| `get_annotations` | `mode:"summary"` (default): `rev`, `umPerPx`, counts for all 12 collections + an index capped at `limit` rows (500) with die-pixel `rect` per resolvable cell. `mode:"full"`: raw collections, **requires `kinds`**, payloads >4 MB are rejected. |
-| `list_overlay_layers` | The image layers: `__base__` plus every uploaded overlay (e.g. `sirtl`), with id, name, dimensions, format, tile-build progress and **purpose** (`purpose` + `purposeSource: user/auto/none`; `sirtl` auto-detects as `diffusion`). |
-| `get_die_image` | Full-die preview of the base photograph (JPEG, longest side ≤4096), written to disk. |
-| `get_overlay_image` | Full-layer preview of one overlay (JPEG, longest side ≤4096), written to disk. Resolves `overlayId` by id or display name. |
-| `get_crop` | Image crop → file on disk. One target: `cellId` (backend-resolved footprint), `cellTypeId`, or a raw rect `x/y/w/h` (≤4096 px/side, clipped and flagged). `padding` (cellId only) is computed locally; `px` asks for a preview. Pass `overlayId` (id or name) to composite an overlay over the base — this is how you check whether metal actually connects two devices. Returns `path` (+`base64` under 1.5 MB when asked). |
-| `get_region_summary` | Spatial query over `x/y/w/h`: cells (with their computed rect), nets with bounding boxes, pins, comments, floorplans and rulers that intersect. Cheaper than reading all annotations when studying one block. |
-| `get_metal_stack` | Interconnect stack (metals, vias, defaults). |
-| `get_spice_config` | Saved SPICE technology config (`{}` if none). |
-| `get_analog_devices` | Device-name store used by netlist export. |
+| `list_dies` | All projects, size and MCP access state. Start here. |
+| `get_die_info` | Size, scale, overlays (with `purpose` / `purposeSource`), annotation counts, write mode, process, metal stack. |
+| `get_annotations` | JSON sections with `offset`/`limit` and an approximate `bbox` filter; returns `mcpOwnedIds`. |
+| `get_die_image` | Die photo, a region, `maxSize` and optional `overlayId`; returns JPEG + coordinate mapping. |
+| `render_annotated_image` | Die region with annotations, highlights, marks (box/circle/arrow/polyline/label) and legend. |
+| `list_overlay_layers` | Base + overlays with dimensions, tile progress, `purpose`, `purposeSource`, `suggestedPurpose`. |
+| `get_region_summary` | Cells/nets/pins/comments/floorplans/rulers intersecting a rect, with bboxes. |
+| `find_wires_near` | Exact net nodes, segments and vias around a point, with ids, distance and ownership. |
+| `get_spice_config` | Saved SPICE technology config. |
+| `get_analog_devices` | Analog device-name store. |
 
-**Act**
-
-| Tool | Does |
-| --- | --- |
-| `simulate_block` | Extract a floorplan/cell/net selection as a `.SUBCKT` using the rigid boundary rule (only nets crossing the selection become ports), instantiate `X1`, run `testbench`, and publish the run for the SPICE tab. See “Block simulation and handoff”. |
-| `run_ngspice` | Simulate. Needs `netlist`, or `subcircuit` + `directives`. Trims waveform arrays (opt back in with `includeRawData`), truncates output/netlist; `success:false` comes back as an error result. |
-| `run_lvs` | LVS compare (`vyges-lvs` or `name-based` engine); timeouts/missing CLI surface as error results with detail. |
-| `ml_job` | `status` / `start` / `stop` the via-inference sweep (needs the ML sidecar; 503 if it is down). |
-| `cell_detection` | `status` / `start` / `stop` / `list` proposals of a cell type. Start needs `cellTypeId`; one job per die (409 while busy). Proposals are approved in the UI, never written here. |
-
-**Write** (per-entity `PUT`/`DELETE`, each returns the new `rev`)
+**Markup / wires**
 
 | Tool | Does |
 | --- | --- |
-| `edit_nets` | `upsert_net` (create/reshape), `delete_net`, `upsert_node`, `delete_node` (cascades edges), `upsert_edge` (endpoint-checked), `delete_edge`. |
-| `edit_cells` | `upsert` merges into a stored instance (move with just `x/y`), creates when `cellTypeId`+`x`+`y` are given; `delete`. `rotation` ∈ 0/90/180/270. |
-| `edit_pins` | `upsert` / `delete` I/O pads (`x`, `y`, `pin`, `name`). |
-| `edit_rulers` | `upsert` / `delete`; recomputes `lengthPx`/`lengthUm` from the die's `umPerPx`. |
-| `edit_comments` | `add` / `reply` / `delete`; author stamped as `mcp` + `MMO_AGENT_NAME`. |
-| `edit_floorplans` | `upsert` / `delete` regions (rect = 2 points, polygon ≥3); default colour `#4dabf7`. |
-| `set_scale` | Sets `umPerPx` (the ruler "set scale" workflow). |
-| `export_project` | ZIP (`light`/`full`) → disk, returns the absolute path and byte count. |
+| `add_comment`, `reply_to_comment`, `update_comment`, `delete_comment` | Comments and replies; optional rendered image attachment. |
+| `add_floorplan_region`, `update_floorplan_region`, `delete_floorplan_region` | Functional-block outlines. |
+| `add_ruler`, `update_ruler`, `delete_ruler` | Measurements in die pixels / µm. |
+| `add_wire`, `update_wire`, `delete_wire` | Create nets, extend/connect/merge nets; only MCP-owned geometry is editable in `edit` mode. |
+| `add_via`, `update_via`, `delete_via` | Vias on the metal/process stack. |
+| `edit_cells`, `edit_pins` | Place/move/reorient/delete cells and I/O pads (full-edit gate). |
+| `edit_annotations` | Batch `upsert`/`delete`/`set` of any section (full-edit gate). |
 
-## Layers and images
+**Analysis / simulation**
 
-The base photograph often hides the layer that answers the question. Before
-claiming that two devices are (or are not) connected, look at the relevant
-overlay — for this project `sirtl` is the developed-silicon image, and metal
-layers usually carry `me`/`metal` plus a number in their name.
+| Tool | Does |
+| --- | --- |
+| `export_netlist` | Re-run extraction on current annotations; CDL/Spectre/HSPICE text + counts/warnings. |
+| `run_ngspice` | Run a deck or `subcircuit` + `directives`; measurements/variables/notes. `publish` stores the run for SPICE. |
+| `simulate_block` | Extract a floorplan/cell/net selection as `.SUBCKT` with rigid ports, auto-`X1`, run the testbench and publish the handoff. |
+| `run_lvs` | `vyges-lvs` or name-based layout-vs-schematic comparison. |
+| `export_project` | Portable ZIP (`light`/`full`) written to a local temp path. |
+| `ml_job` | `status` / `start` / `stop` the ML via sweep. |
+| `cell_detection` | `status` / `start` / `stop` / `list` cell-placement proposals. |
 
-```jsonc
-// 1. which layers exist?
-{ "tool": "list_overlay_layers", "args": { "dieId": "..." } }
-// -> layers: [ {id:"__base__", kind:"base"},
-//              {id:"<uuid>", name:"sirtl", kind:"overlay", width, height, ...} ]
+`edit_nets` is deliberately not a separate tool: the wire/via tools above cover nets with
+stricter ownership and graph rules. `set_scale` and `get_crop(cellId/cellTypeId)` are not
+exposed by design: scaling is a user action, and `get_die_image` by rect + `overlayId`
+covers crops. `get_metal_stack` is not separate either — `get_die_info.metalStack` has it.
 
-// 2. native-resolution crop of one layer, composited over the base
-{ "tool": "get_crop", "args": {
-    "dieId": "...", "overlayId": "sirtl",
-    "x": 3000, "y": 6000, "w": 900, "h": 900
-} }
+## Write access
 
-// 3. cheap full-layer overview (JPEG, ≤4096 px)
-{ "tool": "get_overlay_image", "args": { "dieId": "...", "overlayId": "sirtl" } }
+Per die, in the MCP tab:
 
-// 4. full-die base overview
-{ "tool": "get_die_image", "args": { "dieId": "..." } }
-```
+- `mode`: `off` (read-only), `create` (comments, replies, floorplans, rulers),
+  `edit` (also modify/delete MCP-created markup);
+- `wires`: separate toggle for nets/vias (creating into any net is allowed, but only
+  MCP-created nodes/segments/vias may be moved or deleted);
+- `full`: overrides both — any annotation, human-made included, can be changed.
 
-`get_crop` keeps overlay crops in a separate file (`..._ov-<id>.jpg`), so a
-base crop and the same rect on a layer never overwrite each other. Overlay ids
-and names are resolved case-insensitively; an unknown name returns the list of
-available layers instead of a generic 404.
+MCP writes have their own server-side undo/redo stack (MCP tab), independent of the die
+viewer's Ctrl+Z. `get_die_info` reports the current gates before you write.
 
-## Block simulation and handoff
+## Layers
 
-`simulate_block` selects devices by `regionId` (floorplan region), `cellIds`
-and/or annotation `netIds`, then applies the same rigid partition rule as the
-SPICE tab's floorplan hierarchy:
+`list_overlay_layers` returns `__base__` plus uploaded overlays. A user can set an
+explicit purpose in the die viewer's overlay list; otherwise the name heuristic applies
+(`sirtl` → diffusion, `me1` → metal1, `via12` → via). `purposeSource` is `user`, `auto` or
+`none`, so an unlabelled layer is explicit rather than guessed.
+
+## Block simulation and SPICE handoff
+
+`simulate_block` selects devices by `regionId`, `cellIds` and/or annotation `netIds`, then:
 
 - a net touched only by selected devices is **internal**;
 - a net that also reaches an unselected device becomes a **port**;
-- the port order is returned in `block.ports` and used by the generated `X1`.
+- the generated `X1` uses `block.ports`; the testbench contains only sources, loads,
+  analysis and `.measure` (do not write `X1`/`.SUBCKT`).
 
-The testbench must contain only sources, loads, analysis and `.measure`; do not
-write `X1` or the `.SUBCKT` yourself. A typical run:
-
-```jsonc
-{ "tool": "simulate_block", "args": {
-    "dieId": "import-…",
-    "regionId": "mcp-bandgap-core",
-    "name": "error_amp",
-    "testbench": "VCC VCC 0 10\n.op",
-    "binPath": "C:\\Program Files\\Spice64\\bin\\ngspice_con.exe"
-} }
-```
-
-The result includes `block.ports`, `block.internalNets`, the `.SUBCKT`, the full
-deck, measurements and a `handoff`. With `publish:true` (the default) the
-handoff is stored at `<project>/spice-runs/latest.json`; the SPICE Simulation
-tab shows an **“MCP agent run”** banner and opens it through the same path as an
-assistant handoff (editable testbench, models, automatic run). Use
-`publish:false` for a throw-away probe.
-
-## Conventions and contracts
-
-- **Coordinates are source pixels** (the imported image's own grid), top-left origin —
-  exactly what the UI stores. No device coordinates; µm come from `umPerPx`.
-- **Read before you write.** `rev` increments on every annotation write; a summary read
-  is cheap enough to precede every `edit_*`.
-- **No bulk writes.** The server deliberately exposes per-entity routes only, so an agent
-  cannot accidentally replace the whole annotation file.
-- **Ids**: ids you do not supply are generated as `mcp-<kind>-<time>-<rand>`; the agent
-  identity stamped on authored items is `mcp` / `MMO_AGENT_NAME`.
-- **Cell footprint** equals the region the app's own crop endpoints serve (backend
-  `cellDieRect`: mirror, then rotate about the type-box centre — a 90° cell of a W×H type
-  covers H×W). Cells whose type only resolves through a library scan come back without
-  `rect` (drop `padding` and target them by `cellId` instead).
-- **Errors are results**: anything the caller can fix (bad arguments, unknown ids,
-  backend HTTP errors) arrives as `isError` with a human-readable message, not as a
-  protocol fault. A failed simulation is an error result too — it is never dressed up as
-  data.
-
-## Not covered (v0)
-
-Importing/creating projects, uploading/deleting overlay images, bulk annotation
-replacement, running or approving ML/CV extraction, editing cell-type layer
-shapes, saving metal-stack / SPICE config / analog device stores (read-only
-here), and destructive ML clears (delete all detections). Those stay in the UI
-until there is a real agent workflow behind them.
+With `publish:true` (default) the run is stored at `<project>/spice-runs/latest.json`.
+The SPICE Simulation tab shows an **“MCP agent run”** banner and opens it through the
+normal handoff path, so the testbench/models stay editable and the run can be replayed.
+`run_ngspice` accepts the same `publish` flag.
 
 ## Development
 
 ```bash
-npx tsc -p mcp/tsconfig.json --noEmit   # typecheck (shared types imported from the workspace)
-npm run test -w mcp                     # 50 unit/integration tests, mock fetch + in-memory MCP transport
-npm run smoke -w mcp                    # end-to-end against a live backend (exit 2 = backend down)
+npm run dev                                   # backend on :3001
+npx tsc -p backend/tsconfig.json --noEmit     # typecheck
+node --import tsx --test backend/src/mcp/mcp.test.ts
 ```
 
-Layout: `src/config.ts` (env), `src/client.ts` (HTTP + error mapping), `src/result.ts`
-(MCP result helpers), `src/footprint.ts` (cell footprint/rect maths), `src/summary.ts`
-(pure summary/full builders), `src/tools/*.ts` (tool modules), `src/build.ts` (wiring,
-side-effect free → used by tests), `src/server.ts` (stdio entry point).
-
-Windows note: the server logs to **stderr** only — stdout is the MCP protocol.
+The MCP implementation lives in `backend/src/api/mcp.ts` (transport, approval, GUI routes),
+`backend/src/mcp/mcpTools.ts` (read/markup tools), `mcpWires.ts`, `mcpFullEdit.ts`,
+`mcpExtended.ts` (netlist/SPICE/LVS/ML/export), `mcpBlock.ts` (rigid block partition),
+`mcpAccess.ts` (per-die approval), `mcpState.ts` (write gates and undo history).

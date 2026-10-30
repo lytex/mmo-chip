@@ -90,6 +90,8 @@ import { alignVias, viasToCanonical } from "../lib/viaAlign";
 import { MERGE_HOTKEYS } from "../lib/hotkeys";
 import { useOverlayHotkeys } from "../lib/useOverlayHotkeys";
 import { topVisibleOverlaySourceId, useOverlayLayers } from "../state/overlayLayers";
+import { OverlayLayerSelector } from "../components/OverlayLayerSelector";
+import { useAutoLoadOverlayLayers } from "../lib/useAutoLoadOverlayLayers";
 
 export function MergeCellsPage() {
   const [params] = useSearchParams();
@@ -118,6 +120,7 @@ function Merge({ dieId }: { dieId: string }) {
   const annotationsQ = useAnnotations(dieId);
   useAnnotationsWebSocket(dieId);
   useOverlayHotkeys();
+  useAutoLoadOverlayLayers(dieId);
   const overlayLayers = useOverlayLayers((s) => s.layers);
   const previewOverlaySourceId = useMemo(
     () => topVisibleOverlaySourceId(),
@@ -398,12 +401,15 @@ function Merge({ dieId }: { dieId: string }) {
     ? {
         cellType: specimenType,
         cell: specimenCell,
-        imageUrl: cleanSpecimen
-          ? specimenImageUrl(dieId, specimenType.id, cleanSpecimen.createdAt)
-          : specimenCell
+        imageUrl: previewOverlaySourceId
+          ? specimenCell
             ? cellCropUrl(dieId, specimenCell, previewOverlaySourceId)
-            : (foreignSpecimenUrl ??
-              cellTypeCropUrl(dieId, specimenType, previewOverlaySourceId)),
+            : (foreignSpecimenUrl ?? cellTypeCropUrl(dieId, specimenType, previewOverlaySourceId))
+          : cleanSpecimen
+            ? specimenImageUrl(dieId, specimenType.id, cleanSpecimen.createdAt)
+            : specimenCell
+              ? cellCropUrl(dieId, specimenCell)
+              : foreignSpecimenUrl ?? cellTypeCropUrl(dieId, specimenType),
         mlVias: specimenViasQ.data ?? null
       }
     : null;
@@ -462,9 +468,11 @@ function Merge({ dieId }: { dieId: string }) {
       ? {
           cellType: specimenType,
           cell: null,
-          imageUrl: localTypeSpecimen
-            ? specimenImageUrl(dieId, typeCandidate.cellType.id, localTypeSpecimen.createdAt)
-            : ownerTypeSpecimenUrl,
+          imageUrl: previewOverlaySourceId && localTypeSpecimen
+            ? cellTypeCropUrl(dieId, typeCandidate.cellType, previewOverlaySourceId)
+            : localTypeSpecimen
+              ? specimenImageUrl(dieId, typeCandidate.cellType.id, localTypeSpecimen.createdAt)
+              : ownerTypeSpecimenUrl,
           align: {
             cellType: typeCandidate.cellType,
             ...typeAlign,
@@ -1093,26 +1101,7 @@ function Merge({ dieId }: { dieId: string }) {
     >
       <SubBar
         right={
-          <button
-            className="btn"
-            disabled
-            title="Base image (one per die for now)"
-            style={{ maxWidth: 220 }}
-          >
-            {Ic.image}
-            <span
-              className="m"
-              style={{
-                fontSize: 10.5,
-                marginLeft: 4,
-                overflow: "hidden",
-                textOverflow: "ellipsis"
-              }}
-            >
-              {baseImageName}
-            </span>
-            {Ic.caret}
-          </button>
+            <OverlayLayerSelector baseName={baseImageName} />
         }
       >
         <PanelToggle side="left" collapsed={leftCollapsed} onClick={toggleLeft} />

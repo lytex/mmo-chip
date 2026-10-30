@@ -31,6 +31,51 @@ npm run dev -w frontend   # http://localhost:5173
 npm test
 ```
 
+## Desktop app (binary build)
+
+The whole app ships as an Electron desktop binary with the backend, ML-ready
+frontend, MCP endpoint, bundled ngspice and vyges-lvs — no installs required
+on the target machine:
+
+```sh
+npm run desktop:build:win    # → desktop/build/dist/ (zip + win-unpacked)
+npm run desktop:build:linux  # → AppImage + deb
+```
+
+### Launch modes
+
+| Command | What it does |
+|---------|--------------|
+| `mmo-chip.exe` | **Local (default)** — spawns a private backend and opens the window on `http://127.0.0.1:3101` |
+| `mmo-chip.exe --serve` | **Shared server** — spawns the backend, no window; a tray icon lists the LAN URLs. Closing the window keeps the server running (`MMOCHECK_ROLE=server` env does the same) |
+| `mmo-chip.exe --connect <host:port>` | **Client** — no local backend; the window attaches to a remote server |
+| `mmo-chip.exe --local` | Forget the saved remote connection, back to local mode |
+| `mmo-chip.exe --dev-vite` | Dev — attach to a running `npm run dev` stack (Vite on :5173) without spawning anything |
+
+### Team setup: one server, many clients
+
+1. One person starts the shared server: `mmo-chip.exe --serve`. Allow the
+   Windows Firewall prompt on first run (or open TCP 3101 manually) — the
+   tray shows the addresses to share.
+2. Everyone else opens `http://<ip>:3101` in a regular browser — zero
+   installation. For the frameless desktop window instead of a tab:
+   `mmo-chip.exe --connect <ip>:3101`. The address is remembered, so plain
+   launches reconnect to the server; `--local` switches back to the private
+   backend.
+3. All data and heavy jobs (ngspice, LVS, ML) run on the server machine —
+   clients only need the browser.
+
+Optional auth: set `JWT_SECRET` on the server to require login (the app ships
+a login/register page); without it anyone on the LAN has full access.
+
+ML is optional: run `setup_ml.bat` / `setup_ml.ps1` (Linux: `setup_ml.sh`) in
+the app folder to install the Python sidecar as a plugin (GPU auto-detected);
+the app starts it automatically on the next launch. Without it everything
+else works out of the box.
+
+Frameless in-app title bar, MCP via `http://127.0.0.1:3101/mcp` + the Claude
+Desktop `.mcpb`. Details: [docs/DESKTOP_BUILD.md](docs/DESKTOP_BUILD.md).
+
 ---
 
 ## Data and Editing

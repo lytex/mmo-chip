@@ -4,6 +4,7 @@ import { BrandMark, Ic } from "../../icons";
 import { withShortcut } from "../../lib/hotkeys";
 import { useAuth } from "../../state/auth";
 import { useSession } from "../../state/session";
+import { isDesktopApp, WindowControls } from "../../desktop/desktop";
 import { OnlineUsersPanel } from "./OnlineUsersPanel";
 
 // `die` controls how the active die is carried into the tab's URL:
@@ -56,6 +57,7 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
 
   return (
     <div
+      className="titlebar-host"
       style={{
         height: 38,
         borderBottom: "1px solid var(--l2)",
@@ -67,6 +69,8 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
         flex: "0 0 auto"
       }}
     >
+      {/* Frameless: the container itself is the drag region (see global.css);
+          every child opts out via CSS, so tabs and menus stay clickable. */}
       <div style={{ display: "flex", alignItems: "center", gap: 9 }}>
         <BrandMark style={{ flex: "0 0 auto" }} />
         <div
@@ -223,6 +227,13 @@ export function TopBar({ breadcrumb, meta, savedAgo, onUndo, onRedo, canUndo, ca
             </>
           )}
         </div>
+      )}
+
+      {isDesktopApp() && (
+        <>
+          <Divider />
+          <WindowControls />
+        </>
       )}
     </div>
   );

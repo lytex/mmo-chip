@@ -1305,7 +1305,9 @@ export const CellRECanvas = forwardRef<CellRECanvasHandle, Props>(function CellR
       ctx.drawImage(region.canvas, r.x, r.y, r.width, r.height);
       ctx.restore();
     } else if (img) {
-      if (baseVisible) {
+       // Canonical crops can be selected overlays. They must remain visible
+       // when Space+B hides the underlying die image.
+       if (baseVisible || imageCanonical) {
         if (cell) drawCellCrop(ctx, img, cell, box);
         else ctx.drawImage(img, 0, 0, box.w, box.h);
       }

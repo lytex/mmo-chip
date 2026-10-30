@@ -56,9 +56,15 @@ select {
   font: inherit;
   color: inherit;
   background: var(--card);
+  color-scheme: dark;
   border: 1px solid var(--l2);
   border-radius: 3px;
   padding: 2px 6px;
+}
+
+select option {
+  color: var(--ink);
+  background: var(--card);
 }
 
 input:focus,
@@ -1112,3 +1118,44 @@ input.switch[type="checkbox"]:focus-visible {
     animation: none;
   }
 }
+
+/* ── Electron frameless window (desktop build only) ───────────────────
+   The TopBar container itself is the drag region; every descendant opts
+   out explicitly. (An absolutely-positioned strip UNDER the content does
+   NOT work: positioned layers paint after flow content, so the drag
+   region lands on top and swallows clicks from nav tabs / menus.) */
+.desktop-frameless .titlebar-host {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.desktop-frameless .titlebar-host * {
+  -webkit-app-region: no-drag;
+}
+/* Login page chrome: the fixed strip drags, the window controls opt out. */
+.desktop-frameless .desktop-page-chrome-strip {
+  -webkit-app-region: drag;
+  user-select: none;
+}
+.desktop-window-controls,
+.desktop-window-controls * {
+  -webkit-app-region: no-drag;
+}
+.desktop-window-control {
+  width: 30px;
+  height: 20px;
+  display: inline-flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--ink3);
+  border-radius: 3px;
+  background: transparent;
+}
+.desktop-window-control:hover {
+  background: rgba(255, 255, 255, 0.08);
+  color: var(--ink);
+}
+.desktop-window-control:hover[aria-label='Close'] {
+  background: rgba(232, 72, 72, 0.75);
+  color: #fff;
+}
+

@@ -300,6 +300,42 @@ test("overlay purpose persists, auto-detects from the name and can be forced to 
   assert.equal(forcedNone.body.image.explicitPurpose, "none");
 });
 
+test("overlay purpose saves when a moved folder project has a stale originalPath", async () => {
+  const { app, dataRoot } = await createHarness();
+  const dieImage = await sharp({
+    create: { width: 64, height: 64, channels: 3, background: { r: 0, g: 0, b: 0 } }
+  })
+    .png()
+    .toBuffer();
+  const importResponse = await request(app)
+    .post("/api/dies/import")
+    .attach("file", dieImage, { filename: "die.png", contentType: "image/png" });
+  const { dieId } = await waitForCompletedJob(app, importResponse.body.id);
+
+  const upload = await request(app)
+    .post(`/api/dies/${dieId}/overlay-images/upload`)
+    .attach("file", dieImage, { filename: "sirtl.png", contentType: "image/png" });
+  assert.equal(upload.status, 201, JSON.stringify(upload.body));
+  const id = upload.body.image.id;
+
+  // Simulate a folder project copied from another machine: the absolute
+  // originalPath no longer exists, while manifest and original sit together.
+  const manifestFile = path.join(dataRoot, "overlay-images", dieId, id, "manifest.json");
+  const manifest = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+  manifest.originalPath = path.join("Z:", "moved-away", "original.png");
+  await fs.writeFile(manifestFile, JSON.stringify(manifest, null, 2), "utf8");
+
+  const saved = await request(app)
+    .patch(`/api/dies/${dieId}/overlay-images/${id}`)
+    .send({ purpose: "metal1" });
+  assert.equal(saved.status, 200, JSON.stringify(saved.body));
+  assert.equal(saved.body.image.purpose, "metal1");
+
+  const repaired = JSON.parse(await fs.readFile(manifestFile, "utf8"));
+  assert.equal(repaired.purpose, "metal1");
+  assert.equal(repaired.originalPath, path.join(path.dirname(manifestFile), "original.png"));
+});
+
 test("SPICE handoff is stored per project and returned as latest", async () => {
   const { app } = await createHarness();
   const dieImage = await sharp({

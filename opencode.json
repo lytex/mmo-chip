@@ -2,13 +2,12 @@
   "$schema": "https://opencode.ai/config.json",
   "mcp": {
     "mmo-chip": {
-      "type": "local",
-      "command": ["node", "--import", "tsx", "mcp/src/server.ts"],
-      "cwd": ".",
-      "timeout": 20000,
+      "type": "remote",
+      "url": "http://127.0.0.1:3101/mcp",
       "enabled": true,
-      "environment": {
-        "MMO_BASE_URL": "http://127.0.0.1:3001"
+      "timeout": 20000,
+      "headers": {
+        "Authorization": "Bearer {env:MMOCHIP_TOKEN}"
       }
     }
   }

@@ -15,6 +15,7 @@ import { readAnnotations, readDieRecord } from "../store.js";
 import { parseRenderSpec, renderAnnotated, renderSpecSchemaProperties } from "./annotatedRender.js";
 import { saveCommentImage } from "./commentImages.js";
 import { FULL_EDIT_TOOLS } from "./mcpFullEdit.js";
+import { EXTENDED_TOOLS } from "./mcpExtended.js";
 import {
   findItem,
   MCP_AUTHOR_ID,
@@ -188,7 +189,15 @@ const getDieInfo: ToolDef = {
       umPerPx: annotations.umPerPx ?? null,
       coordinates:
         "All coordinates are full-resolution die image pixels, origin top-left, x right, y down.",
-      overlays: overlays.map((o) => ({ id: o.id, name: o.name, width: o.width, height: o.height })),
+      overlays: overlays.map((o) => ({
+        id: o.id,
+        name: o.name,
+        width: o.width,
+        height: o.height,
+        purpose: o.purpose ?? null,
+        purposeSource: o.purposeSource ?? "none",
+        suggestedPurpose: o.suggestedPurpose ?? null
+      })),
       annotationRev: annotations.rev,
       annotationCounts: sectionCounts(annotations),
       mcpWriteMode: state.mode,
@@ -937,7 +946,8 @@ const TOOLS: ToolDef[] = [
   updateRuler,
   deleteRuler,
   ...WIRE_TOOLS,
-  ...FULL_EDIT_TOOLS
+  ...FULL_EDIT_TOOLS,
+  ...EXTENDED_TOOLS
 ];
 
 export function listMcpTools() {

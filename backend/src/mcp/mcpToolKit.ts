@@ -15,6 +15,10 @@ export interface McpToolContext {
   dataRoot: string;
   dieId: string;
   clientName: string | null;
+  /** Origin of this backend, for tools that reuse its own HTTP routes. */
+  baseUrl?: string;
+  /** Bearer token of the MCP request, forwarded to those internal routes. */
+  authToken?: string | null;
   onAnnotationsChanged?: (dieId: string, rev: number) => void;
 }
 

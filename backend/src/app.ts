@@ -1,3 +1,5 @@
+import path from "node:path";
+import fs from "node:fs";
 import cors from "cors";
 import express from "express";
 import { createImportJobManager } from "./dieImport/jobs.js";
@@ -40,6 +42,8 @@ export function createApp(config: {
   broadcaster?: AnnotationBroadcaster;
   /** How long an MCP call on a die awaiting approval waits (default 50 s). */
   mcpApprovalWaitMs?: number;
+  /** Serve the built SPA from this directory (desktop packaging). */
+  frontendDist?: string;
 }) {
   const app = express();
   const tileScheduler = createTileScheduler({
@@ -138,6 +142,7 @@ export function createApp(config: {
       onAnnotationsChanged: (dieId, rev) =>
         config.broadcaster?.emitAnnotationChange(dieId, rev),
       onAccessChanged: () => config.broadcaster?.emitMcpAccess(),
+      onPromptsChanged: () => config.broadcaster?.emitMcpPrompts(),
       approvalWaitMs: config.mcpApprovalWaitMs
     })
   );
@@ -171,6 +176,29 @@ export function createApp(config: {
       })
       .catch((error) => console.warn("Failed to resume base tile prebuilds", error));
   });
+
+  // Desktop packaging: serve the built SPA and fall back to index.html for
+  // client-side routes. Mounted after every API/MCP router, so it only sees
+  // requests no API layer claimed. Dev (Vite on :5173) leaves this unset.
+  if (config.frontendDist) {
+    const frontendDist = path.resolve(config.frontendDist);
+    if (fs.existsSync(path.join(frontendDist, "index.html"))) {
+      const sendIndex = (response: express.Response): void => {
+        response.sendFile(path.join(frontendDist, "index.html"), (error) => {
+          if (error && !response.headersSent) response.status(500).send("frontend dist missing");
+        });
+      };
+      app.use(express.static(frontendDist, { index: false, maxAge: "1h" }));
+      app.use((request, response, next) => {
+        if (request.method !== "GET" && request.method !== "HEAD") return next();
+        if (request.path.startsWith("/api/") || request.path.startsWith("/mcp")) return next();
+        if (path.extname(request.path)) return next();
+        sendIndex(response);
+      });
+    } else {
+      console.warn(`frontend dist not found at ${frontendDist} — serving API only`);
+    }
+  }
 
   app.use(
     (

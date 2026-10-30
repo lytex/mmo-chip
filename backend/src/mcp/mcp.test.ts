@@ -16,7 +16,12 @@ const tempServers: Server[] = [];
 afterEach(async () => {
   await Promise.all(tempServers.map((server) => new Promise<void>((resolve) => server.close(() => resolve()))));
   tempServers.length = 0;
-  await Promise.all(tempRoots.map((root) => fs.rm(root, { recursive: true, force: true })));
+  await Promise.all(tempRoots.map((root) => fs.rm(root, {
+    recursive: true,
+    force: true,
+    maxRetries: 10,
+    retryDelay: 50
+  })));
   tempRoots.length = 0;
 });
 
@@ -48,7 +53,17 @@ test("speaks the MCP Streamable HTTP handshake", async () => {
   assert.ok(names.includes("get_die_image"));
   assert.ok(names.includes("add_comment"));
   assert.ok(names.includes("add_wire"));
-  assert.ok(!names.some((n: string) => /cell|pin/.test(n)), "no cell / pin editing tools");
+  assert.ok(names.includes("list_overlay_layers"));
+  assert.ok(names.includes("get_region_summary"));
+  assert.ok(names.includes("export_netlist"));
+  assert.ok(names.includes("run_ngspice"));
+  assert.ok(names.includes("simulate_block"));
+  assert.ok(names.includes("run_lvs"));
+  assert.ok(names.includes("export_project"));
+  assert.ok(names.includes("ml_job"));
+  assert.ok(names.includes("cell_detection"));
+  assert.ok(names.includes("edit_cells"));
+  assert.ok(names.includes("edit_pins"));
 
   assert.equal((await rpc(app, "nope", {}, session)).error.code, -32601);
   assert.equal((await request(app).get("/mcp")).status, 405);
@@ -341,6 +356,29 @@ test("renders annotated images and attaches them to comments", async () => {
   assert.equal(image.status, 200);
   assert.match(image.headers["content-type"] ?? "", /image\/jpeg/);
   assert.equal((await request(app).get(`/api/dies/${dieId}/comment-images/..%2Fannotations.json`)).status, 404);
+});
+
+test("region summary and dedicated cell/pin edits", async () => {
+  const { app, dieId } = await createHarness();
+  await request(app).put(`/api/dies/${dieId}/mcp/settings`).send({ full: true }).expect(200);
+  ok(await call(app, dieId, "edit_annotations", {
+    operations: [
+      { op: "upsert", section: "cellTypes", item: { id: "inv", name: "INV", cropRect: { x: 0, y: 0, width: 40, height: 30 } } }
+    ]
+  }));
+  ok(await call(app, dieId, "edit_cells", { action: "upsert", cellId: "c1", cellTypeId: "inv", x: 10, y: 20 }));
+  ok(await call(app, dieId, "edit_pins", { action: "upsert", pinId: "p1", x: 5, y: 5, pin: 1, name: "OUT" }));
+
+  const summary = ok(await call(app, dieId, "get_region_summary", { x: 0, y: 0, width: 100, height: 100 }));
+  assert.equal(summary.counts.cells, 1);
+  assert.equal(summary.counts.pins, 1);
+  assert.deepEqual(summary.cells[0].rect, { x: 10, y: 20, width: 40, height: 30 });
+
+  ok(await call(app, dieId, "edit_cells", { action: "delete", cellId: "c1" }));
+  ok(await call(app, dieId, "edit_pins", { action: "delete", pinId: "p1" }));
+  const ann = (await request(app).get(`/api/dies/${dieId}/annotations`)).body;
+  assert.equal(ann.cells.length, 0);
+  assert.equal(ann.pins.length, 0);
 });
 
 test("process layers: silicon wire layers, contacts and floorplan layer tags", async () => {

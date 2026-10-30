@@ -2,7 +2,7 @@
   "manifest_version": "0.3",
   "name": "mmo-chip",
   "display_name": "mmo-chip",
-  "version": "0.5.0",
+  "version": "0.5.1",
   "description": "Give Claude the mmo-chip dies (each approved once in the app): photo, all annotations and annotated renders; plus markup, wire or full edits when allowed per die.",
   "long_description": "Connects Claude to the dies of a running mmo-chip instance (IC reverse engineering from die photos). Claude can view the die image at any zoom and read every annotation: nets, cells, pins, analog layers, comments, floorplan regions and rulers. Claude can render annotated images of the layout (highlights, arrows, boxes) and attach them to comments. Writes are off by default; the die's MCP tab in mmo-chip can allow markup (comments, floorplan regions, rulers), wires and vias, or full edits of every annotation. Those changes have their own undo/redo stack in that tab.\n\nThe first time Claude uses a die, mmo-chip asks you to approve it.\n\nCopy the endpoint URL from the die viewer's MCP tab (right panel).",
   "author": {
@@ -119,6 +119,58 @@
     {
       "name": "edit_annotations",
       "description": "Full edits: batch upsert / delete / set of any annotation"
+    },
+    {
+      "name": "list_overlay_layers",
+      "description": "Overlay layers with purpose / purposeSource"
+    },
+    {
+      "name": "get_region_summary",
+      "description": "Cells, nets, pins, floorplans and bboxes in a rectangle"
+    },
+    {
+      "name": "get_spice_config",
+      "description": "Saved SPICE technology config"
+    },
+    {
+      "name": "get_analog_devices",
+      "description": "Analog device-name store"
+    },
+    {
+      "name": "export_netlist",
+      "description": "Extract a SPICE netlist server-side"
+    },
+    {
+      "name": "run_ngspice",
+      "description": "Run ngspice and return measurements"
+    },
+    {
+      "name": "simulate_block",
+      "description": "Extract and simulate a floorplan/cell block"
+    },
+    {
+      "name": "run_lvs",
+      "description": "Compare layout and schematic netlists"
+    },
+    {
+      "name": "export_project",
+      "description": "Export the project as a ZIP"
+    },
+    {
+      "name": "ml_job",
+      "description": "Control the ML via-detection sweep"
+    },
+    {
+      "name": "cell_detection",
+      "description": "Control ML cell-placement proposals"
+    },
+    {
+      "name": "edit_cells",
+      "description": "Place, move, reorient or delete cells"
+    },
+    {
+      "name": "edit_pins",
+      "description": "Add, move or delete I/O pins"
     }
   ],
   "tools_generated": true,

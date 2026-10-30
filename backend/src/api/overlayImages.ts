@@ -192,8 +192,28 @@ async function listLegacyFiles(dataRoot: string, dieId: string): Promise<Overlay
   }
 }
 
-async function writeManifest(manifest: OverlayImageManifest): Promise<void> {
-  const target = path.join(path.dirname(manifest.originalPath), "manifest.json");
+async function writeManifest(
+  dataRoot: string,
+  dieId: string,
+  manifest: OverlayImageManifest
+): Promise<void> {
+  // Never derive the manifest location from `originalPath`: a folder project
+  // that was copied or moved between machines keeps a stale absolute original
+  // path, which made purpose saves fail with ENOENT (surfaced as 404 "Not
+  // found"). The source directory is authoritative.
+  const target = await manifestPath(dataRoot, dieId, manifest.id);
+  const dir = path.dirname(target);
+  const localOriginal = path.join(dir, path.basename(manifest.originalPath));
+  if (manifest.originalPath !== localOriginal) {
+    try {
+      await fs.access(localOriginal);
+      // Repair the stale path while we are here so tiles/CV readers need no
+      // fallback lookup.
+      manifest.originalPath = localOriginal;
+    } catch {
+      // The original really lives elsewhere; keep the recorded path.
+    }
+  }
   const temp = `${target}.${crypto.randomBytes(4).toString("hex")}.tmp`;
   try {
     await fs.writeFile(temp, JSON.stringify(manifest, null, 2), "utf8");
@@ -968,7 +988,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
           createdAt: now,
           updatedAt: now
         };
-        await writeManifest(manifest);
+        await writeManifest(config.dataRoot, dieId, manifest);
         // Start preview preparation only after an idle grace period. This gives
         // the UI time to issue its first interactive requests, which must always
         // obtain the worker slots ahead of background coarse generation.
@@ -1011,7 +1031,7 @@ export function createOverlayImagesRouter(config: { dataRoot: string }) {
       // an explicit suppression of the name heuristic.
       manifest.purpose = raw && raw.toLowerCase() !== "auto" ? raw.slice(0, 80) : null;
       manifest.updatedAt = new Date().toISOString();
-      await writeManifest(manifest);
+      await writeManifest(config.dataRoot, dieId, manifest);
       response.json({ image: toListItem(manifest) });
     } catch (error) {
       next(error);

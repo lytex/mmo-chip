@@ -3,6 +3,7 @@ import { useNavigate } from "react-router-dom";
 import { login, register, verify } from "../api/auth";
 import { useAuth } from "../state/auth";
 import { BrandMark } from "../icons";
+import { DesktopPageChrome } from "../desktop/desktop";
 
 type Mode = "login" | "register";
 
@@ -57,6 +58,7 @@ export function LoginPage() {
         color: "var(--ink)"
       }}
     >
+      <DesktopPageChrome />
       {/* Brand bar — matches TopBar styling */}
       <div
         style={{
