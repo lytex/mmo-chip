@@ -187,7 +187,7 @@ import type { WirePreview } from "../components/dieViewer/WireDraftOverlay";
 import { ANNOTATION_KIND_VALUES } from "../state/annotationKinds";
 import { DEFAULT_ML_CONFIG, useDieViewerStore } from "../state/dieViewer";
 import { useOverlayLayers, saveOverlaySettingsToPrefs, applyOverlaySettingsFromPrefs } from "../state/overlayLayers";
-import { usePreferences, selectNetWidth } from "../state/preferences";
+import { usePreferences, selectNetWidth, selectPinSize } from "../state/preferences";
 import { useSession, DEFAULT_METAL_STACK, fetchMetalStack } from "../state/session";
 import { useUserStatus } from "../lib/useUserStatus";
 import { uuid } from "../lib/uuid";
@@ -814,6 +814,13 @@ function DieViewer({ dieId }: { dieId: string }) {
     () => usePreferences.getState().pinNamesVisible,
     []
   );
+  const getPinSize = useCallback(
+    () => selectPinSize(useSession.getState().dieId)(usePreferences.getState()),
+    []
+  );
+  // Pin size feeds the pins' pick bbox (fixed at build time), so a change
+  // repopulates the layer instead of only invalidating the canvas.
+  const pinSize = usePreferences(selectPinSize(dieId));
 
   const resetDieViewer = useDieViewerStore((s) => s.reset);
   // Reset transient selection/expand state whenever the active die changes.
@@ -1037,6 +1044,7 @@ function DieViewer({ dieId }: { dieId: string }) {
       },
       viaLabelVisible: () => usePreferences.getState().viaLabelsVisible,
       pinNamesVisible: () => usePreferences.getState().pinNamesVisible,
+      pinSize: getPinSize,
       netNodeMatchesWidth: () =>
         usePreferences.getState().inspectorTab === "ml",
       wireLayerColor: (layer: string) =>
@@ -1059,7 +1067,7 @@ function DieViewer({ dieId }: { dieId: string }) {
         return c != null && sel.has(`cellType:${c.cellTypeId}`);
       }
     });
-  }, [annotationLayer, annotations]);
+  }, [annotationLayer, annotations, getPinSize, pinSize]);
 
   // Net width/color + cell color/detail + via size/color + wire layer color
   // + net node size/visibility pref changes → invalidate the canvas.
@@ -3321,7 +3329,8 @@ function DieViewer({ dieId }: { dieId: string }) {
                 annotationLayer.update(
                   buildPin(
                     movePin(worldPoint, startWorld, modifiers.shift, false),
-                    getPinNamesVisible
+                    getPinNamesVisible,
+                    getPinSize
                   )
                 );
               },
@@ -3364,7 +3373,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 });
               },
               onCancel: () => {
-                annotationLayer.update(buildPin(original, getPinNamesVisible));
+                annotationLayer.update(buildPin(original, getPinNamesVisible, getPinSize));
               }
             };
             return handler;

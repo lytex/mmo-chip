@@ -17,6 +17,7 @@ import {
 import {
   VIA_DEFAULT_COLOR,
   VIA_DEFAULT_SIZE,
+  PIN_DEFAULT_SIZE,
   WIRE_LAYER_COLOR,
   NET_NODE_RADIUS_MULT
 } from "../renderer/annotations/style";
@@ -60,6 +61,11 @@ interface PreferencesState {
    *  `netWidth`. Each die has its own magnification/scale, so a single
    *  global width doesn't read well on every chip. */
   netWidthByDie: Record<string, number>;
+  /** Global fallback I/O pin marker half-size (world units), used for a die
+   *  with no entry in `pinSizeByDie`. Same per-die scheme as `netWidth`. */
+  pinSize: number;
+  /** Per-die I/O pin marker half-size, keyed by dieId. Absent = `pinSize`. */
+  pinSizeByDie: Record<string, number>;
   /** Per-die angle mode of each drawing tool (ruler, wire / bus, floorplan
    *  polygon, via polygon). Absent = DEFAULT_ANGLE_MODES (lib/angleConstraint). */
   angleModesByDie: Record<string, Partial<Record<AngleTool, AngleMode>>>;
@@ -359,6 +365,8 @@ interface PreferencesState {
 interface PreferencesActions {
   /** Set the net wire width for a specific die (each chip has its own scale). */
   setNetWidth: (dieId: string, width: number) => void;
+  /** Set the I/O pin marker size for a specific die. */
+  setPinSize: (dieId: string, size: number) => void;
   setAngleMode: (dieId: string, tool: AngleTool, mode: AngleMode) => void;
   setNetColor: (color: string) => void;
   /** Override color for a specific net (id like "net:abc"). null = clear. */
@@ -527,6 +535,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
       (set) => ({
         netWidth: NET_DEFAULT_WIDTH,
         netWidthByDie: {},
+        pinSize: PIN_DEFAULT_SIZE,
+        pinSizeByDie: {},
         angleModesByDie: {},
         netColor: NET_COLOR,
         netColors: {},
@@ -634,6 +644,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
 
         setNetWidth: (dieId, width) =>
           set((state) => ({ netWidthByDie: { ...state.netWidthByDie, [dieId]: width } })),
+        setPinSize: (dieId, size) =>
+          set((state) => ({ pinSizeByDie: { ...state.pinSizeByDie, [dieId]: size } })),
         setAngleMode: (dieId, tool, mode) =>
           set((state) => ({
             angleModesByDie: {
@@ -971,6 +983,8 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         partialize: (state) => ({
           netWidth: state.netWidth,
           netWidthByDie: state.netWidthByDie,
+          pinSize: state.pinSize,
+          pinSizeByDie: state.pinSizeByDie,
           angleModesByDie: state.angleModesByDie,
           netColor: state.netColor,
           cellColor: state.cellColor,
@@ -1078,11 +1092,21 @@ export function selectNetColor(netId: string) {
   return (state: PreferencesState) => state.netColors[netId] ?? state.netColor;
 }
 
+/** Per-die override from `byDie` if set, else `fallback`. */
+function perDie(byDie: Record<string, number>, dieId: string | null | undefined, fallback: number): number {
+  return (dieId ? byDie[dieId] : undefined) ?? fallback;
+}
+
 /** Select the effective net wire width for a die: per-die override if set,
  *  else the global fallback `netWidth`. */
 export function selectNetWidth(dieId: string | null | undefined) {
-  return (state: PreferencesState) =>
-    (dieId ? state.netWidthByDie[dieId] : undefined) ?? state.netWidth;
+  return (state: PreferencesState) => perDie(state.netWidthByDie, dieId, state.netWidth);
+}
+
+/** Select the effective I/O pin marker half-size for a die: per-die override
+ *  if set, else the global fallback `pinSize`. */
+export function selectPinSize(dieId: string | null | undefined) {
+  return (state: PreferencesState) => perDie(state.pinSizeByDie, dieId, state.pinSize);
 }
 
 /** Helper selector: is this net (keyed by `net:<netId>`) currently visible?

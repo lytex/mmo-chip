@@ -20,6 +20,8 @@ import {
   VIA_DEFAULT_COLOR,
   VIA_MAX_SIZE,
   VIA_MIN_SIZE,
+  PIN_MAX_SIZE,
+  PIN_MIN_SIZE,
   WIRE_LAYER_COLOR,
   NET_NODE_RADIUS_MULT
 } from "../../renderer/annotations/style";
@@ -30,7 +32,7 @@ import {
   type AnnotationKind
 } from "../../state/annotationKinds";
 import { useDieViewerStore } from "../../state/dieViewer";
-import { usePreferences, selectNetWidth } from "../../state/preferences";
+import { usePreferences, selectNetWidth, selectPinSize } from "../../state/preferences";
 import { TreeRow, TreeSep } from "../tree/TreeRow";
 import { NetColorPickerBody } from "./NetColorPickerBody";
 import { OtherDieBadge } from "../cellLibrary/OtherDieBadge";
@@ -656,26 +658,29 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         label="I/O pins"
         meta={annotations.pins?.length ?? 0}
         controls={
-          <button
-            type="button"
-            className="trow-eye"
-            aria-label={pinNamesVisible ? "hide pin names" : "show pin names"}
-            aria-pressed={!pinNamesVisible}
-            title="Toggle I/O pin name labels"
-            onClick={() => setPinNamesVisible(!pinNamesVisible)}
-            style={{
-              display: "inline-flex",
-              alignItems: "center",
-              justifyContent: "center",
-              background: "transparent",
-              border: 0,
-              padding: 0,
-              color: pinNamesVisible ? "var(--ink3)" : "var(--muted)",
-              cursor: "pointer"
-            }}
-          >
-            {Ic.tag}
-          </button>
+          <>
+            <PinSettingsButton />
+            <button
+              type="button"
+              className="trow-eye"
+              aria-label={pinNamesVisible ? "hide pin names" : "show pin names"}
+              aria-pressed={!pinNamesVisible}
+              title="Toggle I/O pin name labels"
+              onClick={() => setPinNamesVisible(!pinNamesVisible)}
+              style={{
+                display: "inline-flex",
+                alignItems: "center",
+                justifyContent: "center",
+                background: "transparent",
+                border: 0,
+                padding: 0,
+                color: pinNamesVisible ? "var(--ink3)" : "var(--muted)",
+                cursor: "pointer"
+              }}
+            >
+              {Ic.tag}
+            </button>
+          </>
         }
         visibility={{
           ...visibilityFor("pin"),
@@ -1211,6 +1216,49 @@ function viaCounts(annotations: DieAnnotations | undefined) {
 
 // ── Settings popovers ───────────────────────────────────────────────
 
+/** Range slider + numeric readout shared by the size settings popovers. */
+function SizeSlider({ min, max, step, value, onChange }: {
+  min: number;
+  max: number;
+  step: number;
+  value: number;
+  onChange: (v: number) => void;
+}) {
+  return (
+    <div className="row" style={{ gap: 10 }}>
+      <input
+        type="range"
+        min={min}
+        max={max}
+        step={step}
+        value={value}
+        onChange={(e) => onChange(Number(e.target.value))}
+      />
+      <span
+        className="m"
+        style={{ width: 36, color: "var(--ink2)", fontSize: 11, textAlign: "right" }}
+      >
+        {value.toFixed(1)}
+      </span>
+    </div>
+  );
+}
+
+function PinSettingsButton() {
+  const dieId = useSession((s) => s.dieId);
+  const size = usePreferences(selectPinSize(dieId));
+  const setPinSizeForDie = usePreferences((s) => s.setPinSize);
+  const setPinSize = (v: number) => { if (dieId) setPinSizeForDie(dieId, v); };
+  return (
+    <SettingsPopover label="I/O pin settings">
+      <div className="u" style={{ marginBottom: 8 }}>
+        Pin marker size (this die)
+      </div>
+      <SizeSlider min={PIN_MIN_SIZE} max={PIN_MAX_SIZE} step={0.5} value={size} onChange={setPinSize} />
+    </SettingsPopover>
+  );
+}
+
 function NetSettingsButton() {
   const dieId = useSession((s) => s.dieId);
   const width = usePreferences(selectNetWidth(dieId));
@@ -1242,22 +1290,7 @@ function NetSettingsButton() {
       <div className="u" style={{ marginBottom: 8 }}>
         Net wire width
       </div>
-      <div className="row" style={{ gap: 10 }}>
-        <input
-          type="range"
-          min={NET_MIN_WIDTH}
-          max={NET_MAX_WIDTH}
-          step={0.1}
-          value={width}
-          onChange={(e) => setNetWidth(Number(e.target.value))}
-        />
-        <span
-          className="m"
-          style={{ width: 36, color: "var(--ink2)", fontSize: 11, textAlign: "right" }}
-        >
-          {width.toFixed(1)}
-        </span>
-      </div>
+      <SizeSlider min={NET_MIN_WIDTH} max={NET_MAX_WIDTH} step={0.1} value={width} onChange={setNetWidth} />
 
       <div className="u" style={{ margin: "12px 0 8px" }}>
         Color mode
@@ -1410,22 +1443,7 @@ function ViaSettingsButton() {
       <div className="u" style={{ marginBottom: 8 }}>
         Via radius
       </div>
-      <div className="row" style={{ gap: 10 }}>
-        <input
-          type="range"
-          min={VIA_MIN_SIZE}
-          max={VIA_MAX_SIZE}
-          step={0.5}
-          value={viaSize}
-          onChange={(e) => setViaSize(Number(e.target.value))}
-        />
-        <span
-          className="m"
-          style={{ width: 36, color: "var(--ink2)", fontSize: 11, textAlign: "right" }}
-        >
-          {viaSize.toFixed(1)}
-        </span>
-      </div>
+      <SizeSlider min={VIA_MIN_SIZE} max={VIA_MAX_SIZE} step={0.5} value={viaSize} onChange={setViaSize} />
 
       <div className="u" style={{ margin: "12px 0 8px" }}>
         Via color (default)

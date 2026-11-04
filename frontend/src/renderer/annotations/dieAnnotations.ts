@@ -34,6 +34,8 @@ import {
   NET_DEFAULT_WIDTH,
   OUTLINE_WIDTH_PX,
   PICK,
+  PIN_DEFAULT_SIZE,
+  pinScreenHalf,
   SELECT_COLOR,
   SELECT_FILL,
   SELECT_NODE_MULT,
@@ -126,6 +128,10 @@ export interface PopulateOptions {
    *  Default true (names always shown). Independent of the pin kind's
    *  own all-or-nothing visibility (which hides the whole marker). */
   pinNamesVisible?: () => boolean;
+  /** Live getter: I/O pin marker half-size in world units (per die).
+   *  Default PIN_DEFAULT_SIZE. Also sizes the pick bbox, so the layer must
+   *  be repopulated when it changes. */
+  pinSize?: () => number;
   /** The die's library scale (pixels per library unit) — the default a
    *  cell is drawn at. A cell with its own `scale` deviates from it. */
   dieScale?: number;
@@ -216,7 +222,8 @@ export function populateAnnotationLayer(
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
   for (const r of annotations.ignores ?? []) layer.add(buildIgnore(r));
   const getPinNamesVisible = options.pinNamesVisible ?? (() => true);
-  for (const p of annotations.pins ?? []) layer.add(buildPin(p, getPinNamesVisible));
+  const getPinSize = options.pinSize ?? (() => PIN_DEFAULT_SIZE);
+  for (const p of annotations.pins ?? []) layer.add(buildPin(p, getPinNamesVisible, getPinSize));
 }
 
 // ── Cells ────────────────────────────────────────────────────────────
@@ -528,15 +535,20 @@ export function buildRoiRect(roi: ROIRectangle): Annotation {
   };
 }
 
-export function buildPin(pin: IOPin, getNamesVisible: () => boolean): Annotation {
-  const half = 6; // half-size in source pixels for the bbox
+export function buildPin(
+  pin: IOPin,
+  getNamesVisible: () => boolean,
+  getSize: () => number = () => PIN_DEFAULT_SIZE
+): Annotation {
+  const half = getSize(); // half-size in source pixels for the bbox
   return {
     id: `pin:${pin.id}`,
     kind: "pin",
     pickPriority: PICK.pin,
     bbox: { x: pin.x - half, y: pin.y - half, width: half * 2, height: half * 2 },
     draw(ctx, bounds, state) {
-      const r = 6 / bounds.zoom;
+      // World size from the per-die pref, clamped to a CSS-px range like vias.
+      const r = pinScreenHalf(bounds.zoom, getSize()) / bounds.zoom;
       ctx.fillStyle = state.selected ? SELECT_FILL : COLOR_PIN_FILL;
       ctx.strokeStyle = state.selected ? SELECT_COLOR : COLOR_PIN;
       ctx.lineWidth = (state.selected ? SELECT_OUTLINE_PX : OUTLINE_WIDTH_PX) / bounds.zoom;

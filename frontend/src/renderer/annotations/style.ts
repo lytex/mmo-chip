@@ -312,6 +312,24 @@ export function viaScreenRadius(zoom: number, worldR: number): number {
   );
 }
 
+/** Default I/O pin marker half-size (world / source-pixel units). Per-die
+ *  override in `pinSizeByDie`, like the net wire width — each die has its
+ *  own magnification, so one size doesn't fit every chip. */
+export const PIN_DEFAULT_SIZE = 6;
+export const PIN_MIN_SIZE = 1;
+export const PIN_MAX_SIZE = 60;
+/** Screen clamp for the pin marker, same idea as `VIA_MIN/MAX_SCREEN_PX`. */
+export const PIN_MIN_SCREEN_PX = 3;
+export const PIN_MAX_SCREEN_PX = 48;
+
+/** Map a world-unit pin half-size to the CSS-px half-size drawn at `zoom`. */
+export function pinScreenHalf(zoom: number, worldHalf: number): number {
+  return Math.min(
+    PIN_MAX_SCREEN_PX,
+    Math.max(PIN_MIN_SCREEN_PX, worldHalf * zoom)
+  );
+}
+
 /** World-unit snap tolerance for "click on a via" — matches the rendered
  *  radius (click inside the visible dot = snap). Floored at the same CSS-px
  *  minimum used by the render so the snap area stays usable when zoomed
