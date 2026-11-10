@@ -18,6 +18,7 @@ import type {
   RulerMeasurement as Ruler
 } from "shared";
 import type { NetChange } from "../lib/netGraph";
+import { flipAnnotations, type CellTypeSizes, type FlipAxis, type ImageSize } from "../lib/imageFlip";
 import { annotationKeys, removeById, upsertById } from "./annotations";
 import { apiDelete, apiGet, apiPut } from "./client";
 import { useDieViewerStore } from "../state/dieViewer";
@@ -88,7 +89,11 @@ export type AnnotationAction =
   // the cell library lives in — and is written to — the die that owns it.
   // Applied, persisted and undone against that die.
   | { kind: "onDie"; dieId: string; action: AnnotationAction }
-  | { kind: "batch"; actions: AnnotationAction[] };
+  | { kind: "batch"; actions: AnnotationAction[] }
+  // Mirror the die image (display-only) and every annotation with it, on one
+  // axis. Its own inverse. Carries the image size and the cell type sizes it
+  // needs so applying it never depends on other dies' data.
+  | { kind: "flipDie"; axis: FlipAxis; size: ImageSize; typeSizes: CellTypeSizes };
 
 export function inverseOf(action: AnnotationAction): AnnotationAction {
   switch (action.kind) {
@@ -196,6 +201,8 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
       return { kind: "onDie", dieId: action.dieId, action: inverseOf(action.action) };
     case "upsertAnalogLayers":
       return { kind: "upsertAnalogLayers", layers: action.prevLayers!, prevLayers: action.layers };
+    case "flipDie":
+      return action;
   }
 }
 
@@ -340,6 +347,8 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       return annotations;
     case "upsertAnalogLayers":
       return { ...annotations, analogLayers: action.layers };
+    case "flipDie":
+      return flipAnnotations(annotations, action.axis, action.size, action.typeSizes);
   }
 }
 
@@ -443,11 +452,12 @@ export async function requestAction(
       return apiPut(`/api/dies/${dieId}/floorplan/${action.region.id}`, action.region);
     case "removeFloorplan":
       return apiDelete(`/api/dies/${dieId}/floorplan/${action.region.id}`);
+    case "flipDie":
     case "batch": {
       // Single read → apply all mutations locally → single write.
       // Avoids N individual HTTP requests (each with its own disk read/write).
       const current = await apiGet<DieAnnotations>(`/api/dies/${dieId}/annotations`);
-      const patched = action.actions.reduce(applyAction, current);
+      const patched = applyAction(current, action);
       return apiPut(`/api/dies/${dieId}/annotations`, patched);
     }
     case "upsertAnalogLayers":

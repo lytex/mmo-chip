@@ -1,10 +1,11 @@
-import type { DieMetadata, MLPrediction, MLViasTilesResponse } from "shared";
+import type { DieMetadata, ImageFlip, MLPrediction, MLViasTilesResponse } from "shared";
 import {
   pointInRect,
   rectsIntersect,
   type Point,
   type Rect
 } from "../../lib/geometry";
+import { flipPoint, flipRect, isFlipped, type ImageSize } from "../../lib/imageFlip";
 import {
   COLOR_VIA,
   COLOR_VIA_FILL,
@@ -142,6 +143,34 @@ export interface MLViasDisplay {
    *  cached tile. Cardinal but partial — only counts what's been fetched so
    *  far in this session. */
   onCountChange?: (count: number) => void;
+  /** Die image mirror (`DieAnnotations.imageFlip`). Predictions are in raw
+   *  image space; they're mirrored as they load, so every query and id is in
+   *  the shown space. The host calls `clearCache` when it changes. */
+  getFlip?: () => ImageFlip | undefined;
+}
+
+/** A prediction mirrored from raw image space into the shown space. */
+function flipPrediction(p: MLPrediction, flip: ImageFlip | undefined, size: ImageSize): MLPrediction {
+  if (!isFlipped(flip)) return p;
+  const pt = (x: number, y: number) => flipPoint({ x, y }, flip, size);
+  const [x0, y0, x1, y1] = p.bbox;
+  const box = flipRect({ x: x0, y: y0, width: x1 - x0, height: y1 - y0 }, flip, size);
+  return {
+    ...p,
+    pointVias: p.pointVias.map((v) => ({ ...v, ...pt(v.x, v.y) })),
+    irregularVias: p.irregularVias.map((r) => {
+      const b = flipRect({ x: r.bbox[0], y: r.bbox[1], width: r.bbox[2], height: r.bbox[3] }, flip, size);
+      const c = pt(r.centroid[0], r.centroid[1]);
+      return { ...r, bbox: [b.x, b.y, b.width, b.height], centroid: [c.x, c.y] };
+    }),
+    traces: p.traces.map((t) => ({
+      points: t.points.map(([x, y]) => {
+        const q = pt(x, y);
+        return [q.x, q.y] as [number, number];
+      })
+    })),
+    bbox: [box.x, box.y, box.x + box.width, box.y + box.height]
+  };
 }
 
 export class MLViasLayer implements Layer {
@@ -463,6 +492,9 @@ export class MLViasLayer implements Layer {
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
     if (this.display.getHidden?.()) return;
     const { world, zoom } = bounds;
+    const flip = this.display.getFlip?.();
+    // Tiles are addressed in raw image space.
+    const rawWorld = flipRect(world, flip, this.metadata);
 
     // ── Kick off any missing tile fetches ─────────────────────────────
     // Predictions only exist at the native (full-resolution) level — the
@@ -476,15 +508,15 @@ export class MLViasLayer implements Layer {
     const levelMeta = this.metadata.levels[nativeZ];
     if (levelMeta) {
       const tileWorldSize = this.metadata.tileSize * levelMeta.scale;
-      const minTx = Math.max(0, Math.floor(world.x / tileWorldSize));
-      const minTy = Math.max(0, Math.floor(world.y / tileWorldSize));
+      const minTx = Math.max(0, Math.floor(rawWorld.x / tileWorldSize));
+      const minTy = Math.max(0, Math.floor(rawWorld.y / tileWorldSize));
       const maxTx = Math.min(
         levelMeta.columns - 1,
-        Math.floor((world.x + world.width - 1e-6) / tileWorldSize)
+        Math.floor((rawWorld.x + rawWorld.width - 1e-6) / tileWorldSize)
       );
       const maxTy = Math.min(
         levelMeta.rows - 1,
-        Math.floor((world.y + world.height - 1e-6) / tileWorldSize)
+        Math.floor((rawWorld.y + rawWorld.height - 1e-6) / tileWorldSize)
       );
       // Guard against a flood when zoomed so far out the viewport covers a
       // huge slab of native tiles — at that scale the vias are sub-pixel
@@ -531,7 +563,7 @@ export class MLViasLayer implements Layer {
         width: tws,
         height: tws
       };
-      if (!rectsIntersect(tileRect, world)) continue;
+      if (!rectsIntersect(tileRect, rawWorld)) continue;
       if (!tile.loaded || !tile.data) continue;
       const { pointVias, irregularVias } = tile.data;
       const sel = this.selectedViaIds;
@@ -653,7 +685,7 @@ export class MLViasLayer implements Layer {
             const key = `${z}/${t.x}/${t.y}`;
             const entry = this.cache.get(key);
             if (!entry) continue; // evicted while in flight
-            entry.data = t.prediction;
+            entry.data = flipPrediction(t.prediction, this.display.getFlip?.(), this.metadata);
             entry.loaded = true;
             entry.failed = false;
             returned.add(key);

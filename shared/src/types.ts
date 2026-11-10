@@ -865,6 +865,17 @@ export interface DieAnnotations {
   icPackage?: IcPackageConfig;
   /** Silicon process of the die (layers below metal 1). Absent ⇒ metals only. */
   process?: ProcessConfig;
+  /** Display-only mirror of the die image and its overlay layers, about the
+   *  base image's centre. Annotations are stored in the mirrored (displayed)
+   *  space; image tiles, crops and ML inputs stay in raw image space.
+   *  Absent ⇒ not mirrored. */
+  imageFlip?: ImageFlip;
+}
+
+/** Which axes the die image is mirrored on: `h` = left↔right, `v` = top↔bottom. */
+export interface ImageFlip {
+  h?: boolean;
+  v?: boolean;
 }
 
 export interface MLExportRequest {

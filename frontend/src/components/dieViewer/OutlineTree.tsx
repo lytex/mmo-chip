@@ -1,6 +1,6 @@
 import { useCallback, useEffect, useMemo, useRef, useState } from "react";
 import { ProcessSettings } from "./ProcessControls";
-import type { DieAnnotations, FloorplanRegion } from "shared";
+import type { DieAnnotations, FloorplanRegion, ImageFlip } from "shared";
 import { LAYER_PURPOSE_OPTIONS } from "shared/layerPurpose";
 import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
@@ -64,6 +64,9 @@ type Props = {
   /** Cell types owned by another die of the cell library ⇒ that die's
    *  name (badged in the cell list). */
   foreignTypeOwners?: ReadonlyMap<string, string>;
+  /** Mirror the die image(s) on an axis, moving every annotation with them.
+   *  Absent ⇒ no flip controls. */
+  onFlipImage?: (axis: "h" | "v") => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -85,7 +88,7 @@ const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners, onFlipImage }: Props) {
   const toast = useToast();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
@@ -938,6 +941,9 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         expand={baseImagesOpen ? "open" : "closed"}
         label="Base Images"
         meta={baseImages.length}
+        controls={
+          onFlipImage && <ImageFlipSettings flip={annotations?.imageFlip} onFlip={onFlipImage} />
+        }
         onToggleExpand={() => toggleGroup(BASE_IMAGES_KEY)}
         onSelect={() => toggleGroup(BASE_IMAGES_KEY)}
       />
@@ -1133,6 +1139,40 @@ function BulkNetColorButton({ count, onPick }: {
         Color {count} selected nets
       </div>
       <NetColorPickerBody currentColor="" onPick={onPick} />
+    </SettingsPopover>
+  );
+}
+
+/** Mirror every image layer (base + overlays) together, with the annotations
+ *  following so they stay on their features. Text is never mirrored. */
+function ImageFlipSettings({ flip, onFlip }: { flip: ImageFlip | undefined; onFlip: (axis: "h" | "v") => void }) {
+  return (
+    <SettingsPopover label="Image flip">
+      <div className="u" style={{ marginBottom: 8 }}>
+        Flip images
+      </div>
+      <div className="row" style={{ gap: 4 }}>
+        <button
+          type="button"
+          className={"btn sm" + (flip?.h ? " on" : "")}
+          title="Mirror the image(s) left ↔ right; annotations move with them"
+          onClick={() => onFlip("h")}
+        >
+          {Ic.flipH} Horizontal
+        </button>
+        <button
+          type="button"
+          className={"btn sm" + (flip?.v ? " on" : "")}
+          title="Mirror the image(s) top ↔ bottom; annotations move with them"
+          onClick={() => onFlip("v")}
+        >
+          {Ic.flipV} Vertical
+        </button>
+      </div>
+      <div style={{ marginTop: 8, fontSize: 10, color: "var(--ink3)", maxWidth: 220 }}>
+        Applies to the base image and every overlay layer. All annotations move with
+        the image; labels stay readable. One undo step.
+      </div>
     </SettingsPopover>
   );
 }

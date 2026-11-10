@@ -27,6 +27,8 @@ import {
   type TiledCanvasHandle
 } from "../renderer/TiledCanvas";
 import { DieImageLayer } from "../renderer/layers/DieImageLayer";
+import { MirroredLayer } from "../renderer/layers/MirroredLayer";
+import { cellTypeSizes, type FlipAxis } from "../lib/imageFlip";
 import { AnnotationLayer } from "../renderer/layers/AnnotationLayer";
 import {
   MLViasLayer,
@@ -909,7 +911,8 @@ function DieViewer({ dieId }: { dieId: string }) {
               return stack.vias.find((v) => v.id === viaLayer)?.color;
             },
             showMlLabel: true,
-            onCountChange: (n) => useDieViewerStore.getState().setMlViasCount(n)
+            onCountChange: (n) => useDieViewerStore.getState().setMlViasCount(n),
+            getFlip: () => annotationsRef.current?.imageFlip
           })
         : null,
     [die]
@@ -1358,14 +1361,20 @@ function DieViewer({ dieId }: { dieId: string }) {
   }, [liveRenderStatus]);
   const allLayers = useMemo<Layer[]>(() => {
     // Paint order: die image → overlay layers → ML via overlay → user annotations.
-    const out: Layer[] = [...layers];
-    for (const ol of overlayLayerInstances) out.push(ol);
-    if (wireMapLayer) out.push(wireMapLayer);
+    // Image layers are in raw image space: show them through the die's
+    // display-only mirror (`imageFlip`). Annotations are already stored in
+    // the mirrored space, and ML vias mirror their own data.
+    const mirrored = (l: Layer): Layer =>
+      die ? new MirroredLayer(l, () => annotationsRef.current?.imageFlip, die) : l;
+    const out: Layer[] = layers.map(mirrored);
+    for (const ol of overlayLayerInstances) out.push(mirrored(ol));
+    if (wireMapLayer) out.push(mirrored(wireMapLayer));
     if (mlViasLayer) out.push(mlViasLayer);
     if (proposalLayer) out.push(proposalLayer);
     if (annotationLayer) out.push(annotationLayer);
     return out;
   }, [
+    die,
     layers,
     wireMapLayer,
     overlayLayerInstances,
@@ -1373,6 +1382,29 @@ function DieViewer({ dieId }: { dieId: string }) {
     proposalLayer,
     annotationLayer
   ]);
+
+  // Image mirror toggled (here or by another client): ML predictions were
+  // mirrored as they loaded, and every image tile changes.
+  const imageFlipKey = `${annotations?.imageFlip?.h === true}|${annotations?.imageFlip?.v === true}`;
+  useEffect(() => {
+    mlViasLayer?.clearCache();
+    canvasHandle.current?.invalidate();
+  }, [imageFlipKey, mlViasLayer]);
+
+  /** Mirror the die image(s) and every annotation with them (one undo step). */
+  const flipImage = useCallback(
+    (axis: FlipAxis) => {
+      const ann = annotationsRef.current;
+      if (!ann || !die) return;
+      void dispatcher.dispatch({
+        kind: "flipDie",
+        axis,
+        size: { width: die.width, height: die.height },
+        typeSizes: cellTypeSizes(ann)
+      });
+    },
+    [die, dispatcher]
+  );
 
   // ── Behaviors (extracted hooks) ─────────────────────────────────
 
@@ -4445,6 +4477,7 @@ function DieViewer({ dieId }: { dieId: string }) {
                 if (ct) void dispatcher.dispatch({ kind: "upsertCellType", cellType: { ...ct, color }, prevCellType: ct });
               }}
               foreignTypeOwners={foreignTypeOwners}
+              onFlipImage={flipImage}
             />
           </aside>
         )}
