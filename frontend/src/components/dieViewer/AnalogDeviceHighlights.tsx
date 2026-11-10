@@ -117,11 +117,13 @@ export function AnalogDeviceHighlights({
     if (!ctx) return;
 
     let raf = 0;
+    let lastSlowLog = 0;
 
     const draw = () => {
       raf = 0;
       const vp = viewportRef.current;
       if (!vp) return;
+      const t0 = performance.now();
 
       const dpr = window.devicePixelRatio || 1;
       const rect = canvas.getBoundingClientRect();
@@ -215,6 +217,19 @@ export function AnalogDeviceHighlights({
         for (const d of group) {
           drawTerminalLabels(ctx, d, vp, showNetIdsRef.current, netNames);
         }
+      }
+
+      // Slow-draw probe: this overlay repaints EVERY device on screen per
+      // frame (own canvas, full clear + redraw). At far zoom-outs the whole
+      // die's device set is visible, so text measurement + label fills can
+      // outrun the frame budget and visibly lag behind the base image —
+      // the log names the size of the set, rate-limited to 2 s.
+      const drawMs = performance.now() - t0;
+      if (drawMs > 16 && performance.now() - lastSlowLog > 2000) {
+        lastSlowLog = performance.now();
+        console.info(
+          `[perf] analog devices overlay drew ${groups.size} bbox groups in ${drawMs.toFixed(0)}ms`
+        );
       }
     };
 

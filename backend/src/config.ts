@@ -1,10 +1,29 @@
+import fs from "node:fs";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
 import { defaultTileConcurrency } from "./dieImport/jobs.js";
 
 const moduleDirectory = path.dirname(fileURLToPath(import.meta.url));
 const repoRoot = path.resolve(moduleDirectory, "../..");
-const defaultDataRoot = path.join(repoRoot, "data");
+const repoDataRoot = path.join(repoRoot, "data");
+// The desktop app's portable data is where imported dies actually live in
+// day-to-day use. When the backend is started by hand WITHOUT
+// CHIPTOOL_DATA_ROOT (easy to forget in a fresh shell), silently falling
+// back to the repo `data/` used to produce a half-empty world: the die was
+// found there by an old import, but sweeps/layers were written to and read
+// from a different tree than the user expected.
+const portableDataRoot = path.join(
+  repoRoot,
+  "desktop",
+  "build",
+  "dist",
+  "win-unpacked",
+  "portable-data",
+  "data"
+);
+const defaultDataRoot = fs.existsSync(portableDataRoot)
+  ? portableDataRoot
+  : repoDataRoot;
 const parsedLimitInputPixels = process.env.CHIPTOOL_LIMIT_INPUT_PIXELS;
 
 export const config: {

@@ -14,8 +14,11 @@ import type {
   MLServiceStatus,
   MLTrainRequest,
   MLViasTileResult,
-  MLViasTilesResponse
+  MLViasTilesResponse,
+  VectorizeParams,
+  VectorizeResponse
 } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import { createMLJobManager } from "../ml/jobs.js";
 import { resolveOverlayOriginalPath } from "./overlayImages.js";
 import {
@@ -27,6 +30,8 @@ import {
   toPrediction,
   type MLPredictor
 } from "../ml/predict.js";
+import { createVectorizer } from "../ml/vectorize.js";
+import { createVectorSweep, parsePreprocess } from "../ml/vectorSweep.js";
 import { readAnnotations, readDieRecord } from "../store.js";
 import type { AnnotationBroadcaster } from "../ws.js";
 
@@ -35,6 +40,10 @@ const SIDECAR_RW_TIMEOUT_MS = 10000;
 /** Hard cap on a single batched range request (the frontend fetches in
  *  blocks well under this; the cap just guards against a pathological URL). */
 const MAX_RANGE_TILES = 4096;
+/** Crop-pixel cap for a live vectorize request — the endpoint runs while the
+ *  user drags sliders, so a gigapixel whole-die crop would pin the sidecar.
+ *  The frontend skips fetching below the native detail level anyway. */
+const MAX_VECT_AREA = 6_000_000;
 
 async function fetchSidecar(
   url: string,
@@ -530,6 +539,379 @@ export function createMLRouter(config: {
       response.json(
         toPrediction(result, [x0, y0, x1, y1], checkpointHash, overlaySource)
       );
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── GET /api/dies/:dieId/vectorize?bbox=… (live, no disk cache) ──────
+  // Classical (no-model) metal vectorization of a region: threshold a
+  // brightness/colour channel → skeleton traces + mask outlines. Runs while
+  // the user drags sliders, so results are memory-cached per (source, bbox,
+  // params) in the vectorizer and never written to disk. No checkpoint needs
+  // to be loaded — this works on a bare sidecar.
+  const vectorizer = createVectorizer({ mlSidecarUrl: config.mlSidecarUrl });
+  const vectorSweep = createVectorSweep({
+    dataRoot: config.dataRoot,
+    mlSidecarUrl: config.mlSidecarUrl,
+    runVectorize: vectorizer.runVectorize
+  });
+
+  /** Vectorize params from query string (shared by the live + blocks routes). */
+  function parseVectorParams(request: Request): VectorizeParams {
+    const num = (key: string, fallback: number) => {
+      const raw = request.query[key];
+      const n = typeof raw === "string" ? Number(raw) : NaN;
+      return Number.isFinite(n) ? n : fallback;
+    };
+    const channel = String(request.query.channel ?? "gray");
+    return {
+      channel: channel === "r" || channel === "g" || channel === "b" ? channel : "gray",
+      invert: num("invert", 0) !== 0,
+      threshLow: num("threshLow", 120),
+      threshHigh: num("threshHigh", 255),
+      adaptive: num("adaptive", 0) !== 0,
+      adaptiveBlock: num("adaptiveBlock", 51),
+      adaptiveC: num("adaptiveC", 8),
+      openPx: num("openPx", 1),
+      bridgePx: num("bridgePx", 2),
+      minLength: num("minLength", 14),
+      widthMin: num("widthMin", 1.5),
+      widthMax: num("widthMax", 30),
+      decoder: String(request.query.decoder) === "octilinear" ? "octilinear" : "runs",
+      octDeltaPx: num("octDeltaPx", 0),
+      octStrict: num("octStrict", 0) !== 0,
+      preprocess: parsePreprocess(request.query.preprocess)
+    };
+  }
+
+  function parseVectorBbox(request: Request, record: { width: number; height: number }) {
+    const parts = String(request.query.bbox ?? "")
+      .split(",")
+      .map(Number);
+    if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) return null;
+    const x0 = Math.max(0, Math.min(parts[0], parts[2]));
+    const y0 = Math.max(0, Math.min(parts[1], parts[3]));
+    const x1 = Math.min(record.width, Math.max(parts[0], parts[2]));
+    const y1 = Math.min(record.height, Math.max(parts[1], parts[3]));
+    if (x1 <= x0 || y1 <= y0) return null;
+    return [x0, y0, x1, y1] as const;
+  }
+
+  router.get("/api/dies/:dieId/vectorize", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const box = parseVectorBbox(request, record);
+      if (!box) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      const [x0, y0, x1, y1] = box;
+      if ((x1 - x0) * (y1 - y0) > MAX_VECT_AREA) {
+        response.status(400).json({
+          error: `bbox too large for live vectorize (> ${MAX_VECT_AREA} px) — zoom in`
+        });
+        return;
+      }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const overlayPath = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlaySource
+      });
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+
+      const vecParams = parseVectorParams(request);
+      try {
+        const result = await vectorizer.runVectorize({
+          originalPath: record.originalPath,
+          dieWidth: record.width,
+          dieHeight: record.height,
+          keep: [x0, y0, x1, y1],
+          vecParams,
+          overlayPath
+        });
+        response.json({
+          traces: result.traces,
+          outlines: result.outlines,
+          bbox: [x0, y0, x1, y1],
+          ...(result.stats ? { stats: result.stats } : {})
+        } satisfies VectorizeResponse);
+      } catch (error) {
+        response.status(503).json({
+          error: error instanceof Error ? error.message : "vectorize failed"
+        });
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── Whole-die vectorize sweep: block jobs + disk-cached blocks ──────
+  // POST /vectorize/job/start {params, overlaySource?} — decodes every
+  // 2048-px block of the die and caches each under dataRoot/vectorize/
+  // <dieId>/<paramsHash>/col_row.json. GET /vectorize/blocks reads the
+  // cache for a bbox: complete coverage → the overlay draws blocks without
+  // re-decoding; missing blocks → the client falls back to live decode.
+
+  router.post("/api/dies/:dieId/vectorize/job/start", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as {
+        params?: Partial<VectorizeParams>;
+        overlaySource?: string;
+      };
+      const overlaySource = typeof body.overlaySource === "string" && body.overlaySource
+        ? body.overlaySource
+        : undefined;
+      const overlayResolved = overlaySource
+        ? await resolveOverlayOriginalPath({
+            dataRoot: config.dataRoot,
+            dieId,
+            sourceId: overlaySource
+          })
+        : undefined;
+      const overlayPath = overlayResolved ?? undefined;
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const defaults = parseVectorParams(request);
+      const vecParams: VectorizeParams = { ...defaults, ...(body.params ?? {}) };
+      try {
+        const status = await vectorSweep.start(dieId, {
+          originalPath: record.originalPath,
+          dieWidth: record.width,
+          dieHeight: record.height,
+          params: vecParams,
+          overlayPath,
+          overlaySource
+        });
+        response.json(status);
+      } catch (error) {
+        response.status(409).json({
+          error: error instanceof Error ? error.message : "sweep failed"
+        });
+      }
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  router.get("/api/dies/:dieId/vectorize/job", async (request, response) => {
+    response.json(vectorSweep.get(String(request.params.dieId)));
+  });
+
+  router.post("/api/dies/:dieId/vectorize/job/stop", async (request, response) => {
+    response.json(vectorSweep.stop(String(request.params.dieId)));
+  });
+
+  router.get("/api/dies/:dieId/vectorize/blocks", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const box = parseVectorBbox(request, record);
+      if (!box) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const vecParams = parseVectorParams(request);
+      const hash = typeof request.query.hash === "string" ? request.query.hash : undefined;
+      const result = await vectorSweep.readBlocks(dieId, {
+        dieWidth: record.width,
+        dieHeight: record.height,
+        bbox: [box[0], box[1], box[2], box[3]],
+        params: vecParams,
+        overlaySource,
+        hash
+      });
+      response.json(result);
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // The Vector layers list: every SAVED whole-die payload for the die
+  // (newest first) — the left panel's per-layer visibility toggles read it.
+  router.get("/api/dies/:dieId/vectorize/layers", async (request, response, next) => {
+    try {
+      response.json(await vectorSweep.listLayers(String(request.params.dieId)));
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── POST /api/dies/:dieId/vectorize/layers/:hash/rename {name} ────
+  // Rename a saved whole-die layer (the Vector Layers tree's ✎).
+  router.post("/api/dies/:dieId/vectorize/layers/:hash/rename", async (request, response, next) => {
+    try {
+      const name = String((request.body as { name?: unknown } | undefined)?.name ?? "");
+      await vectorSweep.renameLayer(String(request.params.dieId), String(request.params.hash), name);
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── DELETE /api/dies/:dieId/vectorize/layers/:hash ────────────────
+  // Delete a saved whole-die layer (derived cache only: payload + mask +
+  // params/name json under dataRoot/vectorize/<die>/<hash>).
+  router.delete("/api/dies/:dieId/vectorize/layers/:hash", async (request, response, next) => {
+    try {
+      await vectorSweep.deleteLayer(String(request.params.dieId), String(request.params.hash));
+      response.json({ ok: true });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── GET /api/dies/:dieId/sample?bbox=… — pipette colour readout ──────
+  // Mean RGB of a small source region (the vector pipette samples the SAME
+  // image the vectorize endpoint decodes — base or overlay). Tiny crops
+  // only: this is an eyedropper, not a region statistic tool.
+  router.get("/api/dies/:dieId/sample", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const parts = String(request.query.bbox ?? "")
+        .split(",")
+        .map(Number);
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        response.status(400).json({ error: "bbox must be x0,y0,x1,y1" });
+        return;
+      }
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const x0 = Math.max(0, Math.min(Math.floor(parts[0]), Math.floor(parts[2])));
+      const y0 = Math.max(0, Math.min(Math.floor(parts[1]), Math.floor(parts[3])));
+      const x1 = Math.min(record.width, Math.ceil(Math.max(parts[0], parts[2])));
+      const y1 = Math.min(record.height, Math.ceil(Math.max(parts[1], parts[3])));
+      const w = x1 - x0;
+      const h = y1 - y0;
+      if (w <= 0 || h <= 0) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      if (w * h > 4096) {
+        response.status(400).json({ error: "sample region too large (≤ 4096 px)" });
+        return;
+      }
+      const overlaySource = typeof request.query.overlaySource === "string"
+        ? request.query.overlaySource
+        : undefined;
+      const overlayPath = await resolveRequestedOverlayPath({
+        request,
+        dataRoot: config.dataRoot,
+        dieId,
+        sourceId: overlaySource
+      });
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      const buf = await sharp(
+        overlayPath ?? record.originalPath,
+        { limitInputPixels: false }
+      )
+        .extract({ left: x0, top: y0, width: w, height: h })
+        .png()
+        .toBuffer();
+      const stats = await sharp(buf).stats();
+      response.json({
+        r: Math.round(stats.channels[0]?.mean ?? 0),
+        g: Math.round(stats.channels[1]?.mean ?? 0),
+        b: Math.round(stats.channels[2]?.mean ?? 0),
+        samples: w * h
+      });
+    } catch (error) {
+      next(error);
+    }
+  });
+
+  // ── POST /api/dies/:dieId/vectorize/preprocess-preview (PNG) ────────
+  // P2-3 preview: the crop (usually the current viewport) sent through the
+  // SAME sidecar preprocessor the decode uses, returned as an image so the
+  // VectorizeLayer can blit the processed pixels under the overlay — the
+  // user tunes brightness/CLAHE/unsharp while SEEING the effect.
+  router.post("/api/dies/:dieId/vectorize/preprocess-preview", async (request, response, next) => {
+    try {
+      const { dieId } = request.params;
+      const record = await readDieRecord(config.dataRoot, dieId);
+      const body = (request.body ?? {}) as {
+        bbox?: unknown;
+        preprocess?: unknown;
+        overlaySource?: unknown;
+      };
+      const parts = Array.isArray(body.bbox) ? (body.bbox as unknown[]).map(Number) : [];
+      if (parts.length !== 4 || parts.some((n) => !Number.isFinite(n))) {
+        response.status(400).json({ error: "bbox must be [x0, y0, x1, y1]" });
+        return;
+      }
+      const x0 = Math.max(0, Math.min(Math.floor(parts[0]), Math.floor(parts[2])));
+      const y0 = Math.max(0, Math.min(Math.floor(parts[1]), Math.floor(parts[3])));
+      const x1 = Math.min(record.width, Math.ceil(Math.max(parts[0], parts[2])));
+      const y1 = Math.min(record.height, Math.ceil(Math.max(parts[1], parts[3])));
+      const w = x1 - x0;
+      const h = y1 - y0;
+      if (w <= 0 || h <= 0) {
+        response.status(400).json({ error: "Empty or out-of-bounds bbox" });
+        return;
+      }
+      const overlaySource = typeof body.overlaySource === "string" ? body.overlaySource : undefined;
+      const overlayPath = overlaySource
+        ? await resolveOverlayOriginalPath({
+            dataRoot: config.dataRoot,
+            dieId,
+            sourceId: overlaySource
+          })
+        : undefined;
+      if (overlaySource && !overlayPath) {
+        response.status(404).json({ error: "Visible image source not found" });
+        return;
+      }
+      // Downscale the preview crop — preprocessing semantics are per-pixel
+      // (tone LUT is resolution-independent; local ops approximate), the
+      // real decode reads full resolution. Keeps the request well under a
+      // megabyte so following the viewport stays snappy.
+      const PREVIEW_MAX_SIDE = 1200;
+      const scale = Math.min(1, PREVIEW_MAX_SIDE / Math.max(w, h));
+      let pipe = sharp(overlayPath ?? record.originalPath, { limitInputPixels: false }).extract({
+        left: x0,
+        top: y0,
+        width: w,
+        height: h
+      });
+      if (scale < 1) pipe = pipe.resize(Math.max(1, Math.round(w * scale)), Math.max(1, Math.round(h * scale)));
+      const crop = await pipe.png().toBuffer();
+
+      const fd = new FormData();
+      fd.append("image", new Blob([new Uint8Array(crop)], { type: "image/png" }), "crop.png");
+      fd.append("preprocess", JSON.stringify(parsePreprocess(body.preprocess)));
+      // A bare Node fetch failure surfaces as the cryptic "fetch failed"
+      // (the packaged app often runs WITHOUT the optional ML sidecar
+      // plugin — say so instead of leaking transport noise).
+      let res: Response;
+      try {
+        res = await fetchSidecar(`${config.mlSidecarUrl}/vectorize/preprocess`, SIDECAR_RW_TIMEOUT_MS, { method: "POST", body: fd });
+      } catch {
+        response.status(503).json({ error: "sidecar unreachable (ML plugin not installed in this build?)" });
+        return;
+      }
+      if (!res.ok) {
+        response.status(502).json({ error: `preprocess failed (sidecar ${res.status})` });
+        return;
+      }
+      response.set("Content-Type", "image/png");
+      response.send(Buffer.from(await res.arrayBuffer()));
     } catch (error) {
       next(error);
     }

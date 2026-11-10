@@ -32,15 +32,34 @@ import cv2
 import numpy as np
 import torch
 import uvicorn
-from fastapi import FastAPI, File, Form, Header, HTTPException, UploadFile
+from fastapi import FastAPI, File, Form, Header, HTTPException, Response, UploadFile
 from pydantic import BaseModel
 
 from augment import normalize_only
 from cv_match import akaze_verify_matches, akaze_debug_matches, match_contour_pipeline, match_template_pipeline
-from heatmap import extract_components, extract_peaks, extract_trace_polylines
+from heatmap import extract_components, extract_peaks, extract_trace_skeleton
 from model import build_model, infer_num_classes
 from tiling import tile_predict
 from trainer import TrainParams, run_training
+from vectorize import (
+    PreprocessParams,
+    VectorParams,
+    apply_preprocess,
+    build_mask,
+    decode_mask,
+    mask_pad_px,
+    parse_preprocess,
+    vectorize_region,
+)
+
+# Running whole-die decode subprocesses (job_id -> Popen) — cancelled by
+# POST /vectorize/decode/cancel when the sweep's Stop button fires.
+DECODE_JOBS: dict[str, "subprocess.Popen"] = {}
+DECODE_JOBS_LOCK = threading.Lock()
+# save_to (full.json path) -> job_id of the in-flight decode — a repeated
+# sweep start (double click / retried POST) must JOIN the running worker,
+# not spawn a second CPU-eating twin over the same mask.
+DECODE_SAVE_TO: dict[str, str] = {}
 
 
 def _now() -> str:
@@ -90,6 +109,10 @@ class ModelState:
     model: torch.nn.Module | None = None
     model_loaded: bool = False
     training_active: bool = False
+    # Trace-channel decode: binarize lower than the via peak threshold — an
+    # under-trained trace mask dips along wires, and a 0.5 cut fragments the
+    # skeleton into disjoint segments.
+    trace_threshold: float = 0.35
     # Serializes GPU work. Step 1 doesn't use it yet; later steps (predict /
     # train) acquire this so concurrent tile requests don't race the device.
     lock: threading.Lock = field(default_factory=threading.Lock)
@@ -332,7 +355,9 @@ def predict_region(
     resp: dict = {
         "point_vias": [{"x": int(x), "y": int(y), "score": float(s)} for (x, y, s) in peaks],
         "irregular_vias": extract_components(ch1, threshold=threshold) if ch1 is not None else [],
-        "traces": extract_trace_polylines(ch2, threshold=threshold) if ch2 is not None else [],
+        "traces": extract_trace_skeleton(
+            ch2, threshold=STATE.trace_threshold, bridge_px=2
+        ) if ch2 is not None else [],
         "width": w,
         "height": h,
         "num_classes": n_ch,
@@ -353,6 +378,360 @@ def predict_region(
             raise HTTPException(status_code=500, detail="heatmap encode failed")
         resp["heatmap_png_b64"] = base64.b64encode(png.tobytes()).decode("ascii")
     return resp
+
+
+@app.post("/vectorize/region")
+@cv_resource_guard
+def vectorize_region_endpoint(
+    image: UploadFile = File(...),
+    channel: str = Form("gray"),
+    invert: bool = Form(False),
+    thresh_low: int = Form(120),
+    thresh_high: int = Form(255),
+    adaptive: bool = Form(False),
+    adaptive_block: int = Form(51),
+    adaptive_c: int = Form(8),
+    open_px: int = Form(1),
+    bridge_px: int = Form(2),
+    min_len: int = Form(14),
+    width_min: float = Form(1.5),
+    width_max: float = Form(0.0),
+    max_outlines: int = Form(4000),
+    decoder: str = Form("runs"),
+    oct_delta_px: float = Form(0.0),
+    oct_strict: bool = Form(False),
+    preprocess: str = Form("{}"),
+) -> dict:
+    """Classical (no-model) metal vectorization of the posted crop: threshold
+    a brightness/colour channel into a mask, clean it, decode skeleton traces
+    + mask outlines in *crop-local* pixel coords. Works without any checkpoint
+    — the ML path and this path share only the decode stage. Serialized by
+    the CV gate like the other heavy CV endpoints."""
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+
+    params = VectorParams(
+        channel=channel if channel in ("gray", "r", "g", "b") else "gray",
+        invert=invert,
+        thresh_low=thresh_low,
+        thresh_high=thresh_high,
+        adaptive=adaptive,
+        adaptive_block=adaptive_block,
+        adaptive_c=adaptive_c,
+        open_px=open_px,
+        bridge_px=bridge_px,
+        min_len=min_len,
+        width_min=width_min,
+        width_max=width_max,
+        max_outlines=max_outlines,
+        decoder=decoder if decoder in ("runs", "octilinear") else "runs",
+        oct_delta_px=oct_delta_px,
+        oct_strict=oct_strict,
+    )
+    try:
+        # P2-3: pre-threshold conditioning (tone LUT / denoise / CLAHE /
+        # unsharp), applied to the crop before the channel extraction.
+        import json as _json
+        params.preprocess = parse_preprocess(_json.loads(preprocess) if preprocess else {})
+        rgb = apply_preprocess(rgb, params.preprocess)
+        return vectorize_region(rgb, params)
+    except HTTPException:
+        raise
+    except Exception as exc:  # noqa: BLE001 — surface the cause, not a bare 500
+        import traceback
+        tail = traceback.format_exc().strip().splitlines()[-1]
+        raise HTTPException(
+            status_code=500, detail=f"vectorize failed: {exc} | {tail}"
+        ) from exc
+
+
+class MaskBody(BaseModel):
+    channel: str = "gray"
+    invert: bool = False
+    thresh_low: int = 120
+    thresh_high: int = 255
+    adaptive: bool = False
+    adaptive_block: int = 51
+    adaptive_c: int = 8
+    open_px: int = 1
+    bridge_px: int = 2
+    decoder: str = "runs"
+    oct_delta_px: float = 0.0
+    oct_strict: bool = False
+    preprocess: dict = {}
+
+
+def _params_from_mask_body(b: MaskBody) -> VectorParams:
+    return VectorParams(
+        channel=b.channel if b.channel in ("gray", "r", "g", "b") else "gray",
+        invert=b.invert,
+        thresh_low=b.thresh_low,
+        thresh_high=b.thresh_high,
+        adaptive=b.adaptive,
+        adaptive_block=b.adaptive_block,
+        adaptive_c=b.adaptive_c,
+        open_px=b.open_px,
+        bridge_px=b.bridge_px,
+        decoder=b.decoder if b.decoder in ("runs", "octilinear") else "runs",
+        oct_delta_px=b.oct_delta_px,
+        oct_strict=b.oct_strict,
+        preprocess=parse_preprocess(b.preprocess),
+    )
+
+
+@app.post("/vectorize/mask")
+def vectorize_mask(image: UploadFile = File(...), body: str = Form(...)) -> dict:
+    """Binary metal mask of the posted crop (whole-die sweep step 1). The
+    backend assembles block masks into one seamless die-sized mask and
+    decodes it ONCE — no tile seams by construction. Returns the mask as a
+    base64 PNG (0/255). NB: intentionally NOT CV-gated — the sweep must not
+    starve behind the user's live viewport decodes; masks are cheap."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    try:
+        body = MaskBody(**_json.loads(body))
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad mask params: {exc}") from exc
+    maskParams = _params_from_mask_body(body)
+    # P2-3: the mask must come from the SAME preprocessed pixels the live
+    # region decode sees — apply before build_mask.
+    rgb = apply_preprocess(rgb, maskParams.preprocess)
+    mask = build_mask(rgb, maskParams)
+    ok, png = cv2.imencode(".png", mask * 255)
+    if not ok:
+        raise HTTPException(status_code=500, detail="mask encode failed")
+    return {
+        "mask_png_b64": base64.b64encode(png.tobytes()).decode("ascii"),
+        "width": int(mask.shape[1]),
+        "height": int(mask.shape[0]),
+        # Padding baked into this mask (see mask_pad_px): the caller crops
+        # [pad .. width-pad] back to its core when assembling the die mask.
+        "pad": mask_pad_px(maskParams),
+    }
+
+
+@app.post("/vectorize/preprocess")
+def preprocess_endpoint(image: UploadFile = File(...), preprocess: str = Form("{}")) -> Response:
+    """P2-3 preview: return ONLY the preprocessed crop as PNG. The vector
+    layer blits it under the traces/outlines over the live viewport — the
+    user tunes brightness/contrast/gamma/shadows/highlights/CLAHE/unsharp
+    while SEEING the processed pixels instead of guessing from the overlay.
+    Intentionally NOT CV-gated (like /vectorize/mask): the caller sends a
+    downscaled crop (~≤1.2 Mpx), the cascade is one LUT + cheap local ops."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    bgr = cv2.imdecode(arr, cv2.IMREAD_COLOR)
+    if bgr is None:
+        raise HTTPException(status_code=400, detail="could not decode image")
+    rgb = cv2.cvtColor(bgr, cv2.COLOR_BGR2RGB)
+    try:
+        pp = parse_preprocess(_json.loads(preprocess) if preprocess else {})
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad preprocess params: {exc}")
+    out = apply_preprocess(rgb, pp)
+    ok, png = cv2.imencode(".png", out)
+    if not ok:
+        raise HTTPException(status_code=500, detail="preview encode failed")
+    return Response(content=png.tobytes(), media_type="image/png")
+
+
+@app.post("/vectorize/decode")
+def vectorize_decode(
+    image: UploadFile = File(...),
+    body: str = Form(...),
+    job_id: str = Form(default=""),
+) -> dict:
+    """Whole-die decode (sweep step 2): runs decoder over the assembled
+    seamless mask — grouped, spur-free, minimal-turn centreline traces.
+    Intentionally NOT CV-gated: it runs for minutes and must not starve
+    behind (or starve) the live viewport decodes; they coexist on CPU.
+    Runs in a SUBPROCESS (ml/decode_worker.py): the heavy skeletonize call
+    cannot be interrupted in-process, a child process can be terminated —
+    `job_id` registers it for POST /vectorize/decode/cancel."""
+    import json as _json
+    raw = image.file.read()
+    arr = np.frombuffer(raw, dtype=np.uint8)
+    m = cv2.imdecode(arr, cv2.IMREAD_GRAYSCALE)
+    if m is None:
+        raise HTTPException(status_code=400, detail="could not decode mask")
+    try:
+        b = _json.loads(body)
+    except Exception as exc:  # noqa: BLE001
+        raise HTTPException(status_code=400, detail=f"bad decode params: {exc}") from exc
+    # Guard before spawning anything: a threshold that captures the
+    # background (bright-field shots with a low threshLow) makes the mask
+    # 90%+ white — decoding it is pointless and memory-lethal.
+    coverage = float((m > 127).sum(dtype=np.int64)) / m.size
+    if coverage > 0.7:
+        raise HTTPException(
+            status_code=400,
+            detail=(
+                f"threshold captures {coverage:.0%} of the die — that is background, "
+                "not metal. Narrow the band (Thresh low/high) or use the pipette, "
+                "then re-run the whole-die decode."
+            ),
+        )
+
+    import json
+    import subprocess
+    import sys
+    import tempfile
+    import time
+    import uuid
+
+    jid = job_id or b.get("job_id") or f"decode-{uuid.uuid4().hex[:8]}"
+    save_to = str(b["save_to"]) if b.get("save_to") else None
+    tmp_dir = Path(tempfile.gettempdir())
+
+    # Join-into-flight: another worker is already decoding the same target
+    # (retried/double-started POST) — wait for ITS full.json instead of
+    # spawning a twin that would halve (or worse) everyone's CPU share.
+    with DECODE_JOBS_LOCK:
+        existing_jid = DECODE_SAVE_TO.get(save_to) if save_to else None
+        existing_proc = DECODE_JOBS.get(existing_jid) if existing_jid else None
+    if existing_proc is not None and existing_proc.poll() is None:
+        deadline_join = time.monotonic() + 3600  # same extended budget
+        while True:
+            if existing_proc.poll() is not None:
+                break
+            if time.monotonic() > deadline_join:
+                raise HTTPException(status_code=499, detail="joined decode wait timed out")
+            time.sleep(1.0)
+        if save_to and Path(save_to).exists():
+            try:
+                joined = json.loads(Path(save_to).read_text(encoding="utf-8"))
+            except Exception:
+                joined = None
+            if joined and "error" not in joined:
+                return joined
+        raise HTTPException(status_code=499, detail="joined decode failed — retry")
+
+    mask_path = tmp_dir / f"mmochip_decode_{jid}.png"
+    # DISTINCT filenames: the worker OVERWRITES its spec with the result,
+    # so sharing one name used to make a killed worker's leftover SPEC read
+    # back as a "successful" (trace-less) decode — the sweep then wrote a
+    # poison-empty payload. `.result.json` cannot pre-exist as a spec.
+    out_path = tmp_dir / f"mmochip_decode_{jid}.result.json"
+    spec_path = tmp_dir / f"mmochip_decode_{jid}.spec.json"
+    worker = Path(__file__).resolve().parent / "decode_worker.py"
+    mask_path.write_bytes(raw)
+    spec = {
+        "mask": str(mask_path),
+        "out": str(out_path),
+        "params": {
+            "min_len": b.get("min_len", 14),
+            "width_min": b.get("width_min", 0.0),
+            "width_max": b.get("width_max", 0.0),
+            "decoder": b.get("decoder", "runs"),
+            "oct_delta_px": b.get("oct_delta_px", 0.0),
+            "oct_strict": b.get("oct_strict", False),
+        },
+    }
+    if save_to:
+        spec["save_to"] = save_to
+    if b.get("progress_path"):
+        # The worker writes live decode progress (stage/pct/eta) there; the
+        # sweep backend reads the same file for its status endpoint.
+        spec["progress_path"] = str(b["progress_path"])
+        try:  # stale error dump of a previous attempt must not mislead
+            Path(b["progress_path"]).with_name("decode-error.txt").unlink(missing_ok=True)
+        except OSError:
+            pass
+    spec_path.write_text(json.dumps(spec), encoding="utf-8")
+    proc = subprocess.Popen(
+        [sys.executable, str(worker), str(spec_path)],
+        cwd=str(worker.parent.parent),
+        stdout=subprocess.DEVNULL,
+        stderr=subprocess.DEVNULL,
+    )
+    with DECODE_JOBS_LOCK:
+        DECODE_JOBS[jid] = proc
+        if save_to:
+            DECODE_SAVE_TO[save_to] = jid
+    deadline = time.monotonic() + 3600  # 60 min — die-sized "graph" stages
+    # (pure corridor walk over tens of millions of skeleton px) measured
+    # ~25 min ALONE on a 56 Mpx die; 30 min used to behead a run that was
+    # otherwise healthy.
+    try:
+        while True:
+            code = proc.poll()
+            if code is not None:
+                break
+            if time.monotonic() > deadline:
+                proc.terminate()
+                raise HTTPException(status_code=500, detail="whole-die decode timed out (30 min)")
+            time.sleep(1.0)
+        if not out_path.exists():
+            raise HTTPException(status_code=499, detail="whole-die decode cancelled")
+        # Forensics: persist WHY a decode died next to the sweep's progress
+        # file — the temp out file is unlinked below and the raw traceback
+        # otherwise exists only in the worker's vanished stdout.
+        def _dump_worker_error(text: str) -> None:
+            pp = b.get("progress_path")
+            if not pp:
+                return
+            try:
+                Path(pp).with_name("decode-error.txt").write_text(text, encoding="utf-8")
+            except OSError:
+                pass
+        try:
+            result = json.loads(out_path.read_text(encoding="utf-8"))
+        except Exception as exc:  # noqa: BLE001
+            tail = ""
+            try:
+                tail = out_path.read_text(errors="ignore")[-800:]
+            except Exception:  # noqa: BLE001 — gone or locked
+                tail = "(out file unreadable)"
+            _dump_worker_error(f"out file unreadable: {exc}\ntail: {tail}")
+            raise HTTPException(status_code=500, detail=f"decode worker lost output: {exc}") from exc
+        if "error" in result:
+            _dump_worker_error(str(result["error"]))
+            detail = str(result["error"]).strip().splitlines()[-1]
+            raise HTTPException(status_code=500, detail=f"decode failed: {detail}")
+        # Shape check: anything that parses but is not a decode result
+        # (stale spec leftovers, truncated junk) must not reach the client
+        # as success — an empty payload then poisons the frontend overlay.
+        if "traces" not in result or "stats" not in result:
+            _dump_worker_error(f"result shape invalid: keys={sorted(result)[:10]}")
+            raise HTTPException(
+                status_code=500,
+                detail=f"decode worker lost output: result is not a decode payload (keys: {sorted(result)})"
+            )
+        return result
+    finally:
+        with DECODE_JOBS_LOCK:
+            DECODE_JOBS.pop(jid, None)
+            if save_to and DECODE_SAVE_TO.get(save_to) == jid:
+                DECODE_SAVE_TO.pop(save_to, None)
+        if proc.poll() is None:
+            proc.terminate()
+        for p in (mask_path, out_path, spec_path):
+            try:
+                p.unlink(missing_ok=True)
+            except OSError:
+                pass
+
+
+@app.post("/vectorize/decode/cancel")
+def vectorize_decode_cancel(job_id: str = Form(...)) -> dict:
+    """Terminate a running whole-die decode subprocess (sweep Stop button).
+    The parent's in-flight decode request then returns 499 'cancelled'."""
+    with DECODE_JOBS_LOCK:
+        proc = DECODE_JOBS.get(job_id)
+    if proc is None or proc.poll() is not None:
+        return {"cancelled": False}
+    proc.terminate()
+    return {"cancelled": True}
 
 
 def _train_worker(job: JobRecord, params: TrainParams, out: str) -> None:
@@ -904,9 +1283,14 @@ def main() -> None:
     parser.add_argument("--data-root", default=os.environ.get("ML_DATA_ROOT", str(ML_DIR.parent / "data")))
     parser.add_argument("--host", default="127.0.0.1")
     parser.add_argument("--port", type=int, default=int(os.environ.get("ML_SIDECAR_PORT", 8001)))
+    parser.add_argument("--trace-threshold", type=float,
+                        default=float(os.environ.get("ML_TRACE_THRESHOLD", 0.35)),
+                        help="trace-channel binarization threshold (lower = fewer "
+                             "gaps in the decoded wires; vias keep using --threshold)")
     args = parser.parse_args()
 
     STATE.data_root = Path(args.data_root)
+    STATE.trace_threshold = args.trace_threshold
     if args.checkpoint:
         ckpt = Path(args.checkpoint)
         if not ckpt.is_absolute():

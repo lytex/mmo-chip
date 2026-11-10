@@ -339,6 +339,13 @@ export function viaSnapTolerance(zoom: number, worldR: number): number {
 }
 export const COLOR_IGNORE = "rgba(227, 104, 84, 0.8)";
 export const COLOR_IGNORE_FILL = "rgba(227, 104, 84, 0.12)";
+/** Vectorize trace regions (rect/poly contours) — the same cyan-blue the
+ *  region draft overlays use, so tool feedback and committed shapes match. */
+export const COLOR_TRACE_REGION = "rgba(126, 200, 240, 0.9)";
+export const COLOR_TRACE_REGION_FILL = "rgba(126, 200, 240, 0.07)";
+/** Vectorize trace blockages — the ignore-red styling plus an X cross. */
+export const COLOR_TRACE_BLOCKAGE = COLOR_IGNORE;
+export const COLOR_TRACE_BLOCKAGE_FILL = COLOR_IGNORE_FILL;
 export const COLOR_ROI = "rgba(245, 214, 138, 0.9)";
 export const COLOR_PIN = "rgba(127, 178, 255, 0.95)";
 export const COLOR_PIN_FILL = "rgba(127, 178, 255, 0.18)";
@@ -371,6 +378,8 @@ export const PICK = {
   net: 2,
   roi: 1,
   ignore: 1,
+  traceRegion: 1,
+  traceBlockage: 1,
   cell: 0
 } as const;
 

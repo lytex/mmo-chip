@@ -125,14 +125,21 @@ export function attachWebSocketBroadcaster(
     const onlineUsers = getOnlineUsersList();
     send(socket, { type: "user/list", users: onlineUsers });
 
-    // Broadcast user online to everyone else (skip self)
-    broadcast({
-      type: "user/online",
-      userId: sub.userId,
-      username: sub.username,
-      dieId: null,
-      tool: null
-    }, socket);
+    // Broadcast user online to everyone else (skip self) — but only when this
+    // is the user's FIRST connection. Presence is keyed by userId on the
+    // clients; one user may legitimately hold two sockets (e.g. a stale
+    // half-open connection that the server has not noticed is dead yet, plus
+    // its reconnect), and a second user/online with a `dieId: null` status
+    // would clobber the fresh status the first connection already published.
+    if (!hasOtherSubscription(sub.userId, socket)) {
+      broadcast({
+        type: "user/online",
+        userId: sub.userId,
+        username: sub.username,
+        dieId: null,
+        tool: null
+      }, socket);
+    }
 
     socket.on("message", (raw) => {
       let msg: ClientMessage;
@@ -166,19 +173,20 @@ export function attachWebSocketBroadcaster(
 
     socket.on("close", () => {
       subscriptions.delete(socket);
-      broadcast({
-        type: "user/offline",
-        userId: sub.userId
-      }, null);
+      broadcastOfflineOnce(sub);
     });
     socket.on("error", () => {
       subscriptions.delete(socket);
-      broadcast({
-        type: "user/offline",
-        userId: sub.userId
-      }, null);
+      broadcastOfflineOnce(sub);
     });
   });
+
+  /** user/offline only when this socket was the user's LAST connection —
+   *  other sockets of the same user keep them online. */
+  function broadcastOfflineOnce(sub: Subscription) {
+    if (hasOtherSubscription(sub.userId, sub.socket)) return;
+    broadcast({ type: "user/offline", userId: sub.userId }, null);
+  }
 
   function send(socket: WebSocket, msg: ServerMessage) {
     if (socket.readyState !== socket.OPEN) return;
@@ -189,13 +197,25 @@ export function attachWebSocketBroadcaster(
     }
   }
 
-  /** Get the current list of online users from subscriptions. */
-  function getOnlineUsersList() {
-    const users: Array<{ userId: string; username: string; dieId: string | null; tool: string | null }> = [];
+  /** Is any OTHER socket still subscribed as this user? (excludes `except`) */
+  function hasOtherSubscription(userId: string, except: WebSocket): boolean {
     for (const sub of subscriptions.values()) {
-      users.push({ userId: sub.userId, username: sub.username, dieId: sub.dieId, tool: sub.tool });
+      if (sub.userId === userId && sub.socket !== except) return true;
     }
-    return users;
+    return false;
+  }
+
+  /** Get the current list of online users from subscriptions. Presence is
+   *  keyed per USER, not per socket: one user holding two sockets (a stale
+   *  half-open connection + its reconnect) must appear once. The freshest
+   *  socket wins (Map iteration order = insertion order, so the LAST entry
+   *  for a user is the newest connection). */
+  function getOnlineUsersList() {
+    const byUser = new Map<string, { userId: string; username: string; dieId: string | null; tool: string | null }>();
+    for (const sub of subscriptions.values()) {
+      byUser.set(sub.userId, { userId: sub.userId, username: sub.username, dieId: sub.dieId, tool: sub.tool });
+    }
+    return [...byUser.values()];
   }
 
   /** Broadcast to all sockets, optionally excluding `skip` */

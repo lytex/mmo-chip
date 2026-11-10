@@ -79,6 +79,26 @@ const TOOL_GROUPS: ToolGroup[] = [
     ]
   },
   {
+    label: "trace",
+    items: [
+      {
+        kind: "traceRegionRect",
+        icon: Ic.roi,
+        label: "Vectorize trace region (rectangle) — traces render + materialize only inside region(s)"
+      },
+      {
+        kind: "traceRegionPoly",
+        icon: Ic.viaPolygon,
+        label: "Vectorize trace region (polygon) — click vertices, Enter to commit"
+      },
+      {
+        kind: "traceBlockage",
+        icon: Ic.mlExclude,
+        label: "Draw trace blockage — no traces render or materialize inside (wins over regions)"
+      }
+    ]
+  },
+  {
     label: "tools",
     items: [
       { kind: "measure", icon: Ic.ruler, label: "Ruler — drag to measure distance" },
@@ -92,6 +112,9 @@ const TOOL_GROUPS: ToolGroup[] = [
  * The die-viewer's left/centre toolbar: grouped tool buttons, then (only when
  * the active tool actually has options) a stronger divider followed by that
  * tool's controls.
+ *
+ * Space saver: the "trace" group only appears while the right panel's Trace
+ * tab is selected — its tools make no sense outside a vectorization context.
  */
 export function DieToolbar({
   activeTool,
@@ -107,10 +130,14 @@ export function DieToolbar({
   /** The "Place library cell" tool's state and controls. */
   libraryCell?: LibraryCellTool;
 }) {
+  const inspectorTab = usePreferences((s) => s.inspectorTab);
   const options = toolOptions(activeTool, multiWireHint, libraryCell);
+  const groups = inspectorTab === "trace"
+    ? TOOL_GROUPS
+    : TOOL_GROUPS.filter((g) => g.label !== "trace");
   return (
     <>
-      {TOOL_GROUPS.map((group, gi) => (
+      {groups.map((group, gi) => (
         <Fragment key={gi}>
           {gi > 0 && <ToolDivider />}
           {group.label && (

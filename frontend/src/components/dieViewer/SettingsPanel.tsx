@@ -19,6 +19,8 @@ type Props = {
   // Die viewer toggles
   deviceOverlayOn: boolean;
   setDeviceOverlayOn: (v: boolean) => void;
+  perfHudOn: boolean;
+  setPerfHudOn: (v: boolean) => void;
   cellsLocked: boolean;
   setCellsLocked: (v: boolean) => void;
   showTermNetIds: boolean;
@@ -54,9 +56,10 @@ const LLM_PRESETS: Record<string, { baseUrl: string; model: string }> = {
   "custom": { baseUrl: "", model: "" },
 };
 
-function Toggle({ label, checked, onChange }: { label: string; checked: boolean; onChange: (v: boolean) => void }) {
+function Toggle({ label, checked, onChange, title }: { label: string; checked: boolean; onChange: (v: boolean) => void; title?: string }) {
   return (
     <label
+      title={title}
       style={{
         display: "flex", alignItems: "center", gap: 8,
         padding: "4px 0", cursor: "pointer",
@@ -88,6 +91,7 @@ export function SettingsPanel({
   open,
   onClose,
   deviceOverlayOn, setDeviceOverlayOn,
+  perfHudOn, setPerfHudOn,
   cellsLocked, setCellsLocked,
   showTermNetIds, setShowTermNetIds,
   showCellRelations, setShowCellRelations,
@@ -183,6 +187,12 @@ export function SettingsPanel({
             <Toggle label="Via labels" checked={viaLabelsVisible} onChange={setViaLabelsVisible} />
             <Toggle label="Floorplan overlay" checked={floorplanOverlayOn} onChange={setFloorplanOverlayOn} />
             <Toggle label="Floorplan I/O" checked={showFloorplanIO} onChange={setShowFloorplanIO} />
+            <Toggle
+              label="Perf HUD (fps / render ms)"
+              checked={perfHudOn}
+              onChange={setPerfHudOn}
+              title="Rolling 1-second FPS and the last tile-render pass cost in the canvas corner — or open the console for detailed slow-frame logs."
+            />
           </div>
         </div>
 

@@ -510,7 +510,7 @@ export function AssistantPanel({ dieId, annotations, devices, netNames, warnings
         <label style={{ display: "grid", gap: 3 }}>
           <span style={{ color: "var(--ink3)", fontSize: 10 }}>LLM response language</span>
           <select value={brief.language ?? "ru"} onChange={(event) => updateBrief("language", event.target.value)} style={{ font: "inherit", background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}>
-            <option value="ru">Русский</option>
+            <option value="ru">Russian</option>
             <option value="en">English</option>
           </select>
         </label>
@@ -1014,9 +1014,9 @@ function DiscussPopup({
     const added = [...(patch.addDeviceUuids ?? []), ...(patch.addNetIds ?? []).map((id) => `net ${id}`)];
     const removed = [...(patch.removeDeviceUuids ?? []), ...(patch.removeNetIds ?? []).map((id) => `net ${id}`)];
     const note = [];
-    if (added.length) note.push(`добавлены ${added.join(", ")}`);
-    if (removed.length) note.push(`удалены ${removed.join(", ")}`);
-    appendMessage(dieId, finding.id, { role: "user", content: `Карточка обновлена моделью.${note.length ? ` ${note.join("; ")}.` : ""}` });
+    if (added.length) note.push(`added ${added.join(", ")}`);
+    if (removed.length) note.push(`removed ${removed.join(", ")}`);
+    appendMessage(dieId, finding.id, { role: "user", content: `Card updated by the model.${note.length ? ` ${note.join("; ")}.` : ""}` });
     setPendingCardUpdate(null);
   };
   const [input, setInput] = useState("");
@@ -1149,7 +1149,7 @@ function DiscussPopup({
        // The model must see its own questions next time, even when the reply
        // did not spell them out.
        const replyWithQuestions = questions.length
-         ? `${reply}\n\nУточнения, которые нужны:\n${questions.map((question, index) => `${index + 1}. ${question}`).join("\n")}`
+         ? `${reply}\n\nClarifications needed:\n${questions.map((question, index) => `${index + 1}. ${question}`).join("\n")}`
          : reply;
        appendMessage(dieId, finding.id, { role: "assistant", content: replyWithQuestions });
        if (cardUpdate) setPendingCardUpdate(cardUpdate);
@@ -1201,7 +1201,7 @@ function DiscussPopup({
     const numbered = pendingQuestions
       .map((question, index) => `${index + 1}. ${question}`)
       .join("\n");
-    const text = `Ответы на твои вопросы:\n${numbered}\n\n${answer}`;
+    const text = `Answers to your questions:\n${numbered}\n\n${answer}`;
     setPendingQuestions([]);
     setQuestionAnswer("");
     void send(text);
@@ -1228,7 +1228,7 @@ function DiscussPopup({
         <button className="btn ghost" type="button" style={{ marginLeft: "auto", fontSize: 9, padding: "2px 6px" }} onClick={onClose}>Close</button>
       </div>
       <details open style={{ border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
-        <summary style={{ cursor: "pointer", color: "var(--ink2)", fontSize: 10 }}>Карточка · {finding.label}</summary>
+        <summary style={{ cursor: "pointer", color: "var(--ink2)", fontSize: 10 }}>Card · {finding.label}</summary>
         <div style={{ display: "grid", gap: 4, marginTop: 5, minWidth: 0 }}>
           <div style={{ display: "flex", gap: 6, fontSize: 9, flexWrap: "wrap" }}>
             <span style={{ color: colorFor(finding.kind) }}>{finding.kind}</span>
@@ -1242,21 +1242,21 @@ function DiscussPopup({
               {finding.evidence.filter((item) => item.code !== "llm_hypothesis_from_model").map((item, index) => <li key={index}>{item.text}</li>)}
             </ul>
           )}
-          {finding.limitations.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Ограничения:</b> {finding.limitations.join("; ")}</div>}
-          {finding.suggestedChecks.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Проверить:</b> {finding.suggestedChecks.join("; ")}</div>}
+          {finding.limitations.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Limitations:</b> {finding.limitations.join("; ")}</div>}
+          {finding.suggestedChecks.length > 0 && <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}><b>Check:</b> {finding.suggestedChecks.join("; ")}</div>}
         </div>
       </details>
-      <div style={{ fontSize: 9, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.4 }}>Обсуждение</div>
+      <div style={{ fontSize: 9, color: "var(--ink3)", textTransform: "uppercase", letterSpacing: 0.4 }}>Discussion</div>
       <div style={{ display: "grid", gap: 5, overflowY: "auto", minHeight: 60, minWidth: 0 }}>
         {thread.length === 0 && <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.4 }}>Ask a follow-up about this hypothesis — the model sees the full netlist to reason about adjacent parts.</div>}
         {thread.map((message, index) => (
           <div key={index} style={{ display: "flex", flexDirection: "column", alignItems: message.role === "user" ? "flex-end" : "flex-start", minWidth: 0 }}>
             {index === firstAssistantIndex && message.role === "assistant" && (
-              <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Первичный ответ</div>
+              <div style={{ fontSize: 8, color: "var(--ink3)", marginBottom: 2 }}>Initial reply</div>
             )}
             {message.failed ? (
               <div style={{ display: "grid", gap: 3, maxWidth: "100%", border: "1px solid var(--danger, #ed6a5e)", borderRadius: 5, padding: "5px 7px", background: "rgba(237,106,94,0.08)" }}>
-                <div style={{ fontSize: 9, color: "var(--danger, #ed6a5e)", textTransform: "uppercase", letterSpacing: 0.4 }}>Попытка не удалась</div>
+                <div style={{ fontSize: 9, color: "var(--danger, #ed6a5e)", textTransform: "uppercase", letterSpacing: 0.4 }}>Attempt failed</div>
                 <div style={{ fontSize: 10, color: "var(--ink2)", lineHeight: 1.35, overflowWrap: "anywhere" }}>{message.failed.reason}</div>
                 <div style={{ fontSize: 9, color: "var(--ink3)", lineHeight: 1.35, overflowWrap: "anywhere" }}>{message.failed.hint}</div>
               </div>
@@ -1303,7 +1303,7 @@ function DiscussPopup({
             )}
             {message.digest && !message.failed && (
               <div style={{ fontSize: 8.5, color: "var(--ink3)", lineHeight: 1.3, maxWidth: "100%", overflowWrap: "anywhere", wordBreak: "break-word" }}>
-                Модель видела: {message.digest}
+                Model saw: {message.digest}
               </div>
             )}
           </div>
@@ -1351,7 +1351,7 @@ function DiscussPopup({
         )}
         {pendingQuestions.length > 0 && (
           <div style={{ display: "grid", gap: 5, border: "1px solid var(--l2)", borderRadius: 5, padding: "6px 8px", background: "var(--l1)" }}>
-            <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>Нужны уточнения</div>
+            <div style={{ fontSize: 9, color: "var(--ink2)", textTransform: "uppercase", letterSpacing: 0.4 }}>Needs clarification</div>
             <ol style={{ margin: 0, paddingLeft: 14, fontSize: 10, color: "var(--ink2)", lineHeight: 1.35 }}>
               {pendingQuestions.map((question, index) => (
                 <li key={index} style={{ overflowWrap: "anywhere" }}>{question}</li>
@@ -1366,29 +1366,29 @@ function DiscussPopup({
                   answerQuestions();
                 }
               }}
-              placeholder="Ваши ответы (Enter — ответить и продолжить)"
+              placeholder="Your answers (Enter to answer and continue)"
               rows={2}
               style={{ resize: "vertical", font: "inherit", minHeight: 34, background: "var(--l1)", color: "#fff", border: "1px solid var(--l2)", borderRadius: 4, padding: "4px 6px" }}
             />
             <div style={{ display: "flex", gap: 6 }}>
-              <button className="btn" type="button" disabled={busy || !questionAnswer.trim()} onClick={answerQuestions}>Ответить и продолжить</button>
-              <button className="btn ghost" type="button" onClick={() => { setPendingQuestions([]); setQuestionAnswer(""); }}>Пропустить</button>
+              <button className="btn" type="button" disabled={busy || !questionAnswer.trim()} onClick={answerQuestions}>Answer and continue</button>
+              <button className="btn ghost" type="button" onClick={() => { setPendingQuestions([]); setQuestionAnswer(""); }}>Skip</button>
             </div>
           </div>
         )}
         {pendingCardUpdate && (
           <div style={{ display: "grid", gap: 5, border: `1px solid ${colorFor(finding.kind)}`, borderRadius: 5, padding: "6px 8px", background: colorFor(finding.kind) + "10" }}>
-            <div style={{ fontSize: 9, color: "var(--ink2)" }}>Модель предлагает обновить карточку</div>
+            <div style={{ fontSize: 9, color: "var(--ink2)" }}>The model suggests updating the card</div>
             {pendingCardUpdate.assistantComment && <div style={{ color: "var(--ink2)", fontSize: 10, lineHeight: 1.35, whiteSpace: "pre-wrap", overflowWrap: "anywhere" }}>{pendingCardUpdate.assistantComment}</div>}
             {(((pendingCardUpdate.addDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.addNetIds?.length) ?? 0)) > 0 && (
-              <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Добавляемые элементы: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
+              <div style={{ color: "var(--ink3)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Nodes to add: {[...(pendingCardUpdate.addDeviceUuids ?? []), ...(pendingCardUpdate.addNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
             )}
             {(((pendingCardUpdate.removeDeviceUuids?.length) ?? 0) || ((pendingCardUpdate.removeNetIds?.length) ?? 0)) > 0 && (
-              <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Удаляемые элементы: {[...(pendingCardUpdate.removeDeviceUuids ?? []), ...(pendingCardUpdate.removeNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
+              <div style={{ color: "var(--danger, #ed6a5e)", fontSize: 9, lineHeight: 1.3, overflowWrap: "anywhere", wordBreak: "break-word" }}>Nodes to remove: {[...(pendingCardUpdate.removeDeviceUuids ?? []), ...(pendingCardUpdate.removeNetIds ?? []).map((id) => `net ${id}`)].join(", ")}</div>
             )}
             <div style={{ display: "grid", gridTemplateColumns: "1fr 1fr", gap: 4 }}>
-              <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Применить</button>
-              <button className="btn ghost" type="button" onClick={() => { appendMessage(dieId, finding.id, { role: "user", content: "Обновление карточки отклонено пользователем." }); setPendingCardUpdate(null); }}>Отклонить</button>
+              <button className="btn" type="button" onClick={() => pendingCardUpdate && confirmCardUpdate(pendingCardUpdate)}>Apply</button>
+              <button className="btn ghost" type="button" onClick={() => { appendMessage(dieId, finding.id, { role: "user", content: "Card update rejected by the user." }); setPendingCardUpdate(null); }}>Reject</button>
             </div>
           </div>
         )}
@@ -1405,10 +1405,10 @@ function DiscussPopup({
               disabled={busy}
               onClick={() => void send(CONTINUE_PROMPT)}
             >
-              Продолжить
+              Continue
             </button>
             <button className="btn ghost" type="button" style={{ fontSize: 9, padding: "2px 6px" }} onClick={() => setError(null)}>
-              Скрыть
+              Hide
             </button>
           </div>
         </div>
@@ -1520,7 +1520,7 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
       <div style={{ display: "grid", gap: 6, border: "1px solid var(--l2)", borderRadius: 5, padding: "7px 8px", background: "var(--l1)" }}>
         <label style={{ display: "grid", gap: 3 }}>
           <span style={{ color: "var(--ink3)", fontSize: 10 }}>
-            Библиотека (всего схем: {libraries.reduce((n, l) => n + l.cellCount, 0)})
+            Library (circuits: {libraries.reduce((n, l) => n + l.cellCount, 0)})
           </span>
           <select
             value={selectedLib}
@@ -1531,13 +1531,13 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
             {libraries.length === 0 && <option value={selectedLib}>{selectedLib} (not imported)</option>}
             {libraries.map((lib) => <option key={lib.libId} value={lib.libId}>{lib.libId} · {lib.cellCount} cells</option>)}
           </select>
-          {topologies.length > 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>Группы выбраны → поиск по всем библиотекам</span>}
+          {topologies.length > 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>Groups selected → search across all libraries</span>}
         </label>
 
         <div style={{ display: "grid", gap: 3 }}>
-          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Топологические группы (фильтр проверки)</span>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Topological groups (verification filter)</span>
           <div style={{ maxHeight: 150, overflowY: "auto", border: "1px solid var(--l2)", borderRadius: 4, padding: 5, display: "grid", gap: 3, background: "var(--card)" }}>
-            {groups.length === 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>Нет доступных групп</span>}
+            {groups.length === 0 && <span style={{ color: "var(--ink3)", fontSize: 9 }}>No groups available</span>}
             {groups.map((g) => (
               <label key={g.topology} style={{ display: "flex", gap: 6, alignItems: "center", fontSize: 10, color: "var(--ink2)" }}>
                 <input type="checkbox" checked={topologies.includes(g.topology)} onChange={() => toggleTopology(g.topology)} />
@@ -1549,7 +1549,7 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
         </div>
 
         <label style={{ display: "flex", gap: 6, alignItems: "center", justifyContent: "space-between" }}>
-          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Budget — кол-во проверок</span>
+          <span style={{ color: "var(--ink3)", fontSize: 10 }}>Budget — number of checks</span>
           <input
             type="number"
             min={1}
@@ -1561,14 +1561,14 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
         </label>
 
         <button className="btn" type="button" onClick={() => onRun({ libraryId: selectedLib, topologies, budget })} disabled={checking}>
-          {checking ? "Проверка…" : "Run LVS check"}
+          {checking ? "Checking…" : "Run LVS check"}
         </button>
       </div>
 
       {checking && (
         <div style={{ display: "grid", gap: 4 }}>
           <div style={{ color: "var(--ink3)", fontSize: 10 }}>
-            {progress ? `Сравнение: ${progress.checked} / ${progress.total}…` : "Сравнение с эталонной библиотекой…"}
+            {progress ? `Comparing: ${progress.checked} / ${progress.total}…` : "Comparing with the reference library…"}
           </div>
           {progress && progress.total > 0 && (
             <div style={{ height: 4, background: "var(--l2)", borderRadius: 2, overflow: "hidden" }}>
@@ -1589,15 +1589,15 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
         <div style={{ display: "grid", gap: 6 }}>
           <div style={{ display: "grid", gap: 3 }}>
             <div style={{ fontSize: 9, color: "var(--ink3)" }}>
-              {data.checkedCount} из {data.totalCells ?? data.checkedCount} эталонных ячеек сравнено
+              {data.checkedCount} of {data.totalCells ?? data.checkedCount} reference cells compared
               {data.uniqueCells != null && data.totalCells != null && data.uniqueCells < data.totalCells
-                ? ` (${data.uniqueCells} уникальных топологий после дедупликации)`
+                ? ` (${data.uniqueCells} unique topologies after dedup)`
                 : ""}
-              {topologies.length ? ` · группы: ${topologies.join(", ")}` : ""} · топологий: {Object.keys(data.topologyCounts ?? {}).length}
+              {topologies.length ? ` · groups: ${topologies.join(", ")}` : ""} · topologies: {Object.keys(data.topologyCounts ?? {}).length}
             </div>
             {data.topologyCounts && Object.keys(data.topologyCounts).length > 0 && (
               <details style={{ color: "var(--ink3)", fontSize: 9 }}>
-                <summary style={{ cursor: "pointer" }}>распределение по топологиям</summary>
+                <summary style={{ cursor: "pointer" }}>topology distribution</summary>
                 <div style={{ marginTop: 3, lineHeight: 1.5 }}>
                   {Object.entries(data.topologyCounts).sort((a, b) => b[1] - a[1]).map(([t, c]) => `${t}: ${c}`).join(" · ")}
                 </div>
@@ -1608,7 +1608,7 @@ function LvsResultPopup({ libraries, activeLib, onActiveLibChange, groups, onRun
             data.matches.map((m: AssistantLvsMatch) => <LvsMatchCard key={m.cellId + (m.topology ?? "")} match={m} candidateNetlist={data.candidateNetlist} />)
           ) : (
             <div style={{ color: "var(--ink3)", fontSize: 10, lineHeight: 1.4 }}>
-              Совпадений не найдено{data.checkedCount > 0 ? ` — проверено ${data.checkedCount} ячеек группы.` : "."}
+              No matches found{data.checkedCount > 0 ? ` — checked ${data.checkedCount} group cells.` : "."}
             </div>
           )}
         </div>

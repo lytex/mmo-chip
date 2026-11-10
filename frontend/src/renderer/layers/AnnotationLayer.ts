@@ -23,9 +23,18 @@ export interface AnnotationDrawState {
    *  stamping) that would otherwise never match any pass and stay
    *  invisible forever. */
   layerFilter?: string;
+  /** Fast false-ness flag for `isSelected`: nothing is selected at all. Lets
+   *  heavy per-edge/per-node membership lookups (× per tile × per pass) be
+   *  skipped outright in the common empty-selection case. */
+  selectedEmpty?: boolean;
   /** Render pass for vias: "body" = shape only (drawn before nets),
-   *  "label" = text only (drawn after nets). */
-  pass?: "body" | "label";
+   *  "label" = text only (drawn after nets). Nets additionally receive
+   *  "select" (after all conductor passes: ONLY selected parts — selection
+   *  always ends up on top of everything, so painting it once there is the
+   *  same raster as the old repaint-in-every-conductor-pass, at 1/8th the
+   *  work) and "dots" (a final pass where net annotations paint ONLY their
+   *  node dots). */
+  pass?: "body" | "label" | "dots" | "select";
 }
 
 /** Result of a successful point-pick. */
@@ -373,7 +382,11 @@ export class AnnotationLayer implements Layer {
     const isVisible = (a: Annotation) => this.isAnnotationVisible(a);
     const selected = this.selectedIds;
     const isSelected = (id: string) => selected.has(id);
-    const state: AnnotationDrawState = { selected: false, isSelected };
+    const state: AnnotationDrawState = {
+      selected: false,
+      isSelected,
+      selectedEmpty: selected.size === 0
+    };
 
     // Separate hits: non-nets (cells, pins, rois, ignores), vias, and nets.
     const nonNets: typeof hits = [];
@@ -414,6 +427,33 @@ export class AnnotationLayer implements Layer {
         layerState.selected = selected.has(h.annotation.id);
         h.annotation.draw(ctx, bounds, layerState);
       }
+    }
+
+    // Net selection — ONE dedicated pass AFTER all conductor passes. The
+    // SELECT_COLOR is opaque, and selection was repainted inside every
+    // conductor pass anyway (so the last pass already left it on top of
+    // everything): painting it once produces the identical raster at ⅛th
+    // the queries. Without it, ANY selection (one vertex, one edge, a cell
+    // — anything) used to disable the empty-pass skip for EVERY net and
+    // multiply the whole frame's work again.
+    const netSelectState: AnnotationDrawState = { ...state, pass: "select" };
+    for (const h of nets) {
+      if (!isVisible(h.annotation)) continue;
+      netSelectState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, netSelectState);
+    }
+
+    // Net node dots — ONE dedicated pass after all edge passes. Node dots
+    // never changed between passes (they painted identically, on top, eight
+    // times), so a final single pass renders the EXACT same image for a
+    // fraction of the work: with "show dots at wire turns" on, dense
+    // vectorized nets produced N nodes × 8 passes of arc-fill canvas calls
+    // per tile per repaint — the dominant cost of that toggle.
+    const netDotState: AnnotationDrawState = { ...state, pass: "dots" };
+    for (const h of nets) {
+      if (!isVisible(h.annotation)) continue;
+      netDotState.selected = selected.has(h.annotation.id);
+      h.annotation.draw(ctx, bounds, netDotState);
     }
 
     // Via labels — on top of everything (nets + via bodies).

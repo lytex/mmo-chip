@@ -353,8 +353,8 @@ function ProjectTransferStatus({ transfer }: { transfer: ProjectTransfer }) {
     : null;
   const tone = transfer.error ? "#c75c5c" : transfer.active ? "var(--accent)" : "var(--ink3)";
   const label = transfer.error
-    ? `ошибка: ${transfer.error}`
-    : `${transfer.kind === "import" ? "импорт" : "экспорт"}: ${transfer.phase}${percent === null ? "" : ` ${percent}%`}`;
+    ? `error: ${transfer.error}`
+    : `${transfer.kind === "import" ? "import" : "export"}: ${transfer.phase}${percent === null ? "" : ` ${percent}%`}`;
 
   return (
     <span style={{ display: "inline-flex", alignItems: "center", gap: 6, minWidth: 190 }}>

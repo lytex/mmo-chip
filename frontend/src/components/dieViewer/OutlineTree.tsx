@@ -5,6 +5,8 @@ import { LAYER_PURPOSE_OPTIONS } from "shared/layerPurpose";
 import { COLOR_ML_CELL } from "../../renderer/annotations/cellDetections";
 import { Ic } from "../../icons";
 import { useToast } from "../Toast";
+import { useDialog } from "../Dialog";
+import { deleteVectorLayer, renameVectorLayer } from "../../api/ml";
 import { useOverlayLayers } from "../../state/overlayLayers";
 import { useFloorplanStore } from "../../state/floorplan";
 import { useSession, DEFAULT_METAL_STACK, buildMetalStack, fetchMetalStack } from "../../state/session";
@@ -67,6 +69,10 @@ type Props = {
   /** Mirror the die image(s) on an axis, moving every annotation with them.
    *  Absent ⇒ no flip controls. */
   onFlipImage?: (axis: "h" | "v") => void;
+  /** Delete a vectorize trace region (undoable, via the page's dispatcher). */
+  onDeleteTraceRegion?: (region: { id: string }) => void;
+  /** Delete a vectorize trace blockage (undoable, via the page's dispatcher). */
+  onDeleteTraceBlockage?: (blockage: { id: string }) => void;
 };
 
 /** Session-group key for the "ML Regions" parent (it spans two annotation
@@ -87,9 +93,15 @@ const RULERS_KEY = "rulers";
 const BASE_IMAGES_KEY = "base-images";
 /** Session-group key for the "Overlay Layers" section. */
 const OVERLAY_LAYERS_KEY = "overlay-layers";
+/** Session-group key for the "Vector Layers" section (saved whole-die
+ *  vectorize payloads — rendered by the VectorizeLayer, not rbush). */
+const VECTOR_LAYERS_KEY = "vector-layers";
+/** Outline-tree group key for the P2-2 vectorize trace regions. */
+const TRACE_REGIONS_KEY = "vector-trace-regions";
 
-export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners, onFlipImage }: Props) {
+export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabels, onDeviceSelect, onOpenInRE, searchOpenRef, onSetCellTypeColor, foreignTypeOwners, onDeleteTraceRegion, onDeleteTraceBlockage, onFlipImage }: Props) {
   const toast = useToast();
+  const dialog = useDialog();
   const expandedSections = usePreferences((s) => s.expandedSections);
   const hiddenKinds = usePreferences((s) => s.hiddenKinds);
   const toggleSection = usePreferences((s) => s.toggleSectionExpanded);
@@ -111,6 +123,8 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const mlResultsHidden = usePreferences((s) => s.mlResultsHidden);
   const setMlResultsHidden = usePreferences((s) => s.setMlResultsHidden);
+  const mlTracesHidden = usePreferences((s) => s.mlTracesHidden);
+  const setMlTracesHidden = usePreferences((s) => s.setMlTracesHidden);
   const wireMapHidden = usePreferences((s) => s.wireMapHidden);
   const setWireMapHidden = usePreferences((s) => s.setWireMapHidden);
   const cellDetectionsHidden = usePreferences((s) => s.cellDetectionsHidden);
@@ -142,7 +156,13 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const mlViasCount = useDieViewerStore((s) => s.mlViasCount);
   const cellDetectionsCount = useDieViewerStore((s) => s.cellDetectionsCount);
   const wireMapAvailable = useDieViewerStore((s) => s.wireMapAvailable);
-
+  const savedVectorLayers = useDieViewerStore((s) => s.savedVectorLayers);
+  // Per-layer visibility + colour live in preferences (persisted; a layer
+  // is visible only when explicitly enabled — absent = hidden).
+  const vectorLayerHidden = usePreferences((s) => s.vectorLayerHidden);
+  const setVectorLayerVisible = usePreferences((s) => s.setVectorLayerVisible);
+  const vectorLayerColors = usePreferences((s) => s.vectorLayerColors);
+  const setVectorLayerColor = usePreferences((s) => s.setVectorLayerColor);
   // Whole-net ids present in the current selection — includes nets selected
   // by clicking a sub-part (edge/node id like "net:abc/edge:1") on the canvas,
   // so a canvas marquee/shift-click selection can drive the bulk color picker
@@ -167,6 +187,10 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
 
   const localFileInputRef = useRef<HTMLInputElement>(null);
   const serverFileInputRef = useRef<HTMLInputElement>(null);
+
+  // Multi-select anchor for Shift+click range selection in the Nets list —
+  // set by every non-Shift selection click, read by the next Shift+click.
+  const lastNetAnchorRef = useRef<string | null>(null);
 
   // ── Search ──────────────────────────────────────────────────────
   const [searchOpen, setSearchOpen] = useState(false);
@@ -197,6 +221,19 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const matchCell = useCallback((name: string) => !q || name.toLowerCase().includes(q), [q]);
 
   const dieId = useSession((s) => s.dieId);
+  // P2-2: the die's vectorize trace regions + blockages (persisted in the
+  // annotations blob) + their list management. Deletes route through the
+  // page's action dispatcher (prop) so they land on the undo stack.
+  const traceRegions = useMemo(
+    () => (annotations?.traceRegions ?? []).map((r) => r),
+    [annotations]
+  );
+  const traceBlockages = useMemo(
+    () => (annotations?.traceBlockages ?? []).map((b) => b),
+    [annotations]
+  );
+  const traceShapesVisible = usePreferences((s) => s.traceShapesVisible);
+  const setTraceShapesVisible = usePreferences((s) => s.setTraceShapesVisible);
   const [uploadingLegacy, setUploadingLegacy] = useState(false);
   const onLocalFilePick = useCallback(
     (e: React.ChangeEvent<HTMLInputElement>) => {
@@ -292,6 +329,7 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
   const rulersOpen = expandedGroups.includes(RULERS_KEY);
   const baseImagesOpen = expandedGroups.includes(BASE_IMAGES_KEY);
   const overlayLayersOpen = expandedGroups.includes(OVERLAY_LAYERS_KEY);
+  const vectorLayersOpen = expandedGroups.includes(VECTOR_LAYERS_KEY);
   const mlAnyVisible = ML_KINDS.some((k) => !hiddenKinds.includes(k));
   const mlVisibility = {
     visible: mlAnyVisible,
@@ -431,9 +469,29 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
                 onLongPress: () => focus([id], { tight: true })
               }}
               selected={selectedIds.has(id)}
-              onSelect={(e) =>
-                select([id], e.shiftKey || e.metaKey || e.ctrlKey ? "toggle" : "replace")
-              }
+              onSelect={(e) => {
+                // Classic list selection: a plain click replaces + sets the
+                // range ANCHOR; Shift+click selects everything between the
+                // anchor and this row (inclusive) in VISIBLE (search-filtered)
+                // order; Ctrl/Cmd+click toggles. Without this, selecting a
+                // stack of nets one by one is a click per net.
+                if (e.shiftKey) {
+                  const visibleIds = filteredNets.map((n) => `net:${n.id}`);
+                  const anchor = lastNetAnchorRef.current ?? id;
+                  const ai = visibleIds.indexOf(anchor);
+                  const ci = visibleIds.indexOf(id);
+                  if (ai >= 0 && ci >= 0) {
+                    const [lo, hi] = ai <= ci ? [ai, ci] : [ci, ai];
+                    select(visibleIds.slice(lo, hi + 1), "replace");
+                    lastNetAnchorRef.current = anchor;
+                    return;
+                  }
+                }
+                select([id], e.metaKey || e.ctrlKey ? "toggle" : "replace");
+                // Anchor follows every non-Shift interaction (plain AND
+                // ctrl/cmd), matching the wire-tool/explorer convention.
+                lastNetAnchorRef.current = id;
+              }}
               onDoubleClick={() => focus([id])}
             />
           );
@@ -795,11 +853,14 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
         meta={mlViasCount + cellDetectionsCount}
         visibility={{
           visible:
-            !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden),
+            !mlResultsHidden || !mlTracesHidden || !cellDetectionsHidden ||
+            (wireMapAvailable && !wireMapHidden),
           onToggle: () => {
             const hide =
-              !mlResultsHidden || !cellDetectionsHidden || (wireMapAvailable && !wireMapHidden);
+              !mlResultsHidden || !mlTracesHidden || !cellDetectionsHidden ||
+              (wireMapAvailable && !wireMapHidden);
             setMlResultsHidden(hide);
+            setMlTracesHidden(hide);
             setCellDetectionsHidden(hide);
             if (wireMapAvailable) setWireMapHidden(hide);
           }
@@ -817,6 +878,15 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             visibility={{
               visible: !mlResultsHidden,
               onToggle: () => setMlResultsHidden(!mlResultsHidden)
+            }}
+          />
+          <TreeRow
+            depth={1}
+            swatch="rgba(103, 232, 249, 0.9)"
+            label="traces (v1 contours)"
+            visibility={{
+              visible: !mlTracesHidden,
+              onToggle: () => setMlTracesHidden(!mlTracesHidden)
             }}
           />
           <TreeRow
@@ -1076,6 +1146,215 @@ export function OutlineTree({ annotations, onFocus, baseImages = [], deviceLabel
             />
           ))}
         </>
+      )}
+
+      <TreeSep />
+
+      {/* Vector layers (saved whole-die vectorize payloads) -------------- */}
+      <TreeRow
+        expand={vectorLayersOpen ? "open" : "closed"}
+        label="Vector Layers"
+        meta={savedVectorLayers.length}
+        onToggleExpand={() => toggleGroup(VECTOR_LAYERS_KEY)}
+        onSelect={() => toggleGroup(VECTOR_LAYERS_KEY)}
+      />
+      {vectorLayersOpen &&
+        savedVectorLayers.map((layer, i) => {
+          const visible = vectorLayerHidden[layer.hash] === false;
+          const remove = async () => {
+            if (!dieId) return;
+            const ok = await dialog.confirm(
+              `Delete "${layer.name ?? `Saved ${layer.traces} traces`}"/${layer.hash}?\n` +
+                `Only the cached decode is removed — the source image and annotations are untouched.`,
+              "Delete vector layer"
+            );
+            if (!ok) return;
+            try {
+              await deleteVectorLayer(dieId, layer.hash);
+              useDieViewerStore.getState().bumpSavedVectorLayers();
+            } catch (e) {
+              toast.error("Delete failed", e instanceof Error ? e.message : String(e));
+            }
+          };
+          return (
+            <TreeRow
+              key={`veclayer:${layer.hash}`}
+              depth={1}
+              icon={Ic.image}
+              label={
+                <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                  <VectorLayerColorDot
+                    hash={layer.hash}
+                    color={vectorLayerColors[layer.hash] ?? VECTOR_LAYER_PALETTE[0].value}
+                  />
+                  <VectorLayerName
+                    dieId={dieId ?? undefined}
+                    hash={layer.hash}
+                    display={layer.name ?? `Saved ${layer.traces} traces`}
+                  />
+                  <span style={{ fontSize: 9, color: "var(--ink3)" }}>
+                    {layer.name ? `${layer.traces} traces` : `#${i + 1}`}
+                  </span>
+                  {dieId && (
+                    <span
+                      style={{ display: "inline-flex", gap: 4, marginLeft: 2 }}
+                      onClick={(e) => e.stopPropagation()}
+                    >
+                      <button
+                        type="button"
+                        title="Delete layer (cached decode only)"
+                        style={{
+                          fontSize: 9,
+                          lineHeight: 1,
+                          padding: "1px 3px",
+                          cursor: "pointer",
+                          background: "transparent",
+                          color: "var(--ink2)",
+                          border: "1px solid var(--l1, #333)",
+                          borderRadius: 3
+                        }}
+                        onClick={() => void remove()}
+                      >
+                        🗑
+                      </button>
+                    </span>
+                  )}
+                </span>
+              }
+              visibility={{
+                visible,
+                onToggle: () => setVectorLayerVisible(layer.hash, !visible)
+              }}
+            />
+          );
+        })}
+      {vectorLayersOpen && savedVectorLayers.length === 0 && (
+        <div
+          style={{
+            padding: "6px 10px 6px 20px",
+            fontSize: 10,
+            color: "var(--ink3)",
+            lineHeight: 1.5
+          }}
+        >
+          Run "Decode whole die" in the Vector tab — completed results appear
+          here and can be toggled on/off for visual control.
+        </div>
+      )}
+
+      <TreeSep />
+
+      {/* Vectorize trace regions + blockages (P2-2) — drawn rects/polygons
+          restricting what the vectorize overlay renders and "Vector → nets"
+          materializes. The eye toggles WHETHER the committed contours render
+          on the die (persisted, default off). */}
+      <TreeRow
+        expand={expandedGroups.includes(TRACE_REGIONS_KEY) ? "open" : "closed"}
+        label="Trace Regions"
+        meta={traceRegions.length + traceBlockages.length}
+        visibility={{
+          visible: traceShapesVisible,
+          onToggle: () => setTraceShapesVisible(!traceShapesVisible)
+        }}
+        onToggleExpand={() => toggleGroup(TRACE_REGIONS_KEY)}
+        onSelect={() => toggleGroup(TRACE_REGIONS_KEY)}
+      />
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceRegions.map((region) => (
+          <TreeRow
+            key={region.id}
+            depth={1}
+            icon={Ic.roi}
+            label={
+              <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  {region.kind === "rect"
+                    ? `rect (x≈${region.x ?? 0}, y≈${region.y ?? 0}) ${region.width ?? 0}×${region.height ?? 0}`
+                    : `poly · ${region.points?.length ?? 0} pts`}
+                </span>
+                <span
+                  style={{ display: "inline-flex", marginLeft: 2 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    title="Delete trace region"
+                    style={{
+                      fontSize: 9,
+                      lineHeight: 1,
+                      padding: "1px 3px",
+                      cursor: "pointer",
+                      background: "transparent",
+                      color: "var(--ink2)",
+                      border: "1px solid var(--l1, #333)",
+                      borderRadius: 3
+                    }}
+                    onClick={() => onDeleteTraceRegion?.(region)}
+                  >
+                    🗑
+                  </button>
+                </span>
+              </span>
+            }
+            selected={selectedIds.has(`traceRegion:${region.id}`)}
+            onSelect={() => select([`traceRegion:${region.id}`])}
+            onDoubleClick={() => focus([`traceRegion:${region.id}`])}
+          />
+        ))}
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceBlockages.map((blockage) => (
+          <TreeRow
+            key={blockage.id}
+            depth={1}
+            icon={Ic.mlExclude}
+            label={
+              <span style={{ display: "inline-flex", gap: 6, alignItems: "center", minWidth: 0 }}>
+                <span style={{ fontSize: 10, overflow: "hidden", textOverflow: "ellipsis" }}>
+                  blockage (x≈{blockage.x}, y≈{blockage.y}) {blockage.width}×{blockage.height}
+                </span>
+                <span
+                  style={{ display: "inline-flex", marginLeft: 2 }}
+                  onClick={(e) => e.stopPropagation()}
+                >
+                  <button
+                    type="button"
+                    title="Delete trace blockage"
+                    style={{
+                      fontSize: 9,
+                      lineHeight: 1,
+                      padding: "1px 3px",
+                      cursor: "pointer",
+                      background: "transparent",
+                      color: "var(--ink2)",
+                      border: "1px solid var(--l1, #333)",
+                      borderRadius: 3
+                    }}
+                    onClick={() => onDeleteTraceBlockage?.(blockage)}
+                  >
+                    🗑
+                  </button>
+                </span>
+              </span>
+            }
+            selected={selectedIds.has(`traceBlockage:${blockage.id}`)}
+            onSelect={() => select([`traceBlockage:${blockage.id}`])}
+            onDoubleClick={() => focus([`traceBlockage:${blockage.id}`])}
+          />
+        ))}
+      {expandedGroups.includes(TRACE_REGIONS_KEY) &&
+        traceRegions.length === 0 &&
+        traceBlockages.length === 0 && (
+        <div
+          style={{
+            padding: "6px 10px 6px 20px",
+            fontSize: 10,
+            color: "var(--ink3)",
+            lineHeight: 1.5
+          }}
+        >
+          Draw with the "vector" tools in the toolbar: traces render and
+          materialize only inside the drawn area(s).
+        </div>
       )}
     </div>
   );
@@ -1520,6 +1799,119 @@ function ViaSettingsButton() {
         </>
       )}
     </SettingsPopover>
+  );
+}
+
+/** Saved Vector Layers: colour palette (the tree's per-layer dot). */
+const VECTOR_LAYER_PALETTE = [
+  { label: "Amber (default)", value: "#fdc842" },
+  { label: "Cyan", value: "#22d3ee" },
+  { label: "Green", value: "#4ade80" },
+  { label: "Red", value: "#f87171" },
+  { label: "Magenta", value: "#e879f9" },
+  { label: "Blue", value: "#60a5fa" },
+  { label: "Orange", value: "#fb923c" },
+  { label: "White", value: "#e5e7eb" }
+];
+
+/** Saved Vector Layers: the per-layer colour dot → swatches popover. */
+function VectorLayerColorDot({ hash, color }: { hash: string; color: string }) {
+  const setVectorLayerColor = usePreferences((s) => s.setVectorLayerColor);
+  return (
+    <SettingsPopover
+      label="Layer colour"
+      triggerContent={
+        <span
+          style={{
+            display: "inline-block",
+            width: 10,
+            height: 10,
+            borderRadius: "50%",
+            background: color,
+            border: "1px solid rgba(255,255,255,0.35)",
+            flex: "0 0 auto"
+          }}
+        />
+      }
+      triggerStyle={{ padding: "0 4px", height: 16, background: "transparent" }}
+    >
+      <div style={{ padding: 8 }}>
+        <div className="u" style={{ fontSize: 10, marginBottom: 6 }}>
+          Layer colour (traces + metal outlines)
+        </div>
+        <ColorSwatches
+          options={VECTOR_LAYER_PALETTE}
+          value={color}
+          onPick={(c) => setVectorLayerColor(hash, c)}
+        />
+      </div>
+    </SettingsPopover>
+  );
+}
+
+/** Saved Vector Layers: double-click to rename (same interaction as the
+ *  Overlay Layers rows). The backend stores the name; a local override
+ *  bridges the refetch. */
+function VectorLayerName({ dieId, hash, display }: { dieId?: string; hash: string; display: string }) {
+  const toast = useToast();
+  const [local, setLocal] = useState<string | null>(null);
+  const [editing, setEditing] = useState(false);
+  const [draft, setDraft] = useState(display);
+  const shown = local ?? display;
+  useEffect(() => {
+    if (!editing) {
+      setDraft(shown);
+      setLocal(null);
+    }
+    // eslint-disable-next-line react-hooks/exhaustive-deps
+  }, [display, editing]);
+  const commit = async () => {
+    const next = draft.trim().slice(0, 80);
+    setEditing(false);
+    if (!dieId || !next || next === shown) return;
+    setLocal(next);
+    try {
+      await renameVectorLayer(dieId, hash, next);
+      useDieViewerStore.getState().bumpSavedVectorLayers();
+    } catch (e) {
+      toast.error("Rename failed", e instanceof Error ? e.message : String(e));
+      setLocal(null);
+    }
+  };
+  if (editing) {
+    return (
+      <input
+        autoFocus
+        value={draft}
+        maxLength={80}
+        onChange={(event) => setDraft(event.target.value)}
+        onClick={(event) => event.stopPropagation()}
+        onDoubleClick={(event) => event.stopPropagation()}
+        onKeyDown={(event) => {
+          if (event.key === "Enter") void commit();
+          if (event.key === "Escape") {
+            setDraft(shown);
+            setEditing(false);
+          }
+        }}
+        onBlur={() => void commit()}
+        style={{ width: "100%", minWidth: 0, background: "var(--l1)", color: "inherit", border: "1px solid var(--accent)" }}
+      />
+    );
+  }
+  return (
+    <span
+      title="Double-click to rename"
+      onDoubleClick={(event) => {
+        if (!dieId) return;
+        event.stopPropagation();
+        setDraft(shown);
+        setEditing(true);
+      }}
+      style={{ cursor: "text", overflow: "hidden", textOverflow: "ellipsis", whiteSpace: "nowrap" }}
+    >
+      {shown}
+    </span>
   );
 }
 

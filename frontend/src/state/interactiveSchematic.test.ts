@@ -115,6 +115,25 @@ describe("scope slots", () => {
     expect(Object.keys(lay.locked)).toEqual(["M_1"]);
   });
 
+  // Regression for the project-hang bug: pre-validation persisted scopes
+  // may hold ±Infinity/NaN positions from ELK's scanline bug. pruneScope
+  // (called on every mount / dataset change) must sanitize them.
+  it("pruneScope drops non-finite positions", () => {
+    const st = useInteractiveSchematic.getState();
+    st.applyPositions(S1, {
+      GOOD: { x: 1, y: 1 },
+      INF: { x: Infinity, y: 3 },
+      NEG_INF: { x: 2, y: -Infinity },
+      NAN: { x: NaN, y: 4 },
+    });
+    st.pruneScope(S1, ["GOOD", "INF", "NEG_INF", "NAN"]);
+    const positions = useInteractiveSchematic.getState().layouts[S1].positions;
+    expect(positions.GOOD).toEqual({ x: 1, y: 1 });
+    expect(positions.INF).toBeUndefined();
+    expect(positions.NEG_INF).toBeUndefined();
+    expect(positions.NAN).toBeUndefined();
+  });
+
   it("pruneScope with no orphans keeps state identity (no write)", () => {
     const st = useInteractiveSchematic.getState();
     st.applyPositions(S1, { M_1: { x: 1, y: 1 } });
@@ -252,5 +271,25 @@ describe("seedPositions", () => {
     // comes from applyPositions, restoring the seeded M_1 position.
     st.undo(S1);
     expect(useInteractiveSchematic.getState().layouts[S1].positions).toEqual({ M_1: { x: 42, y: 7 } });
+  });
+
+  // Regression for the project-hang bug: scopes persisted before ELK
+  // layout results were validated could contain ±Infinity/NaN positions
+  // (ELK scanline-compaction bug silently returned garbage). The store
+  // must never seed/persist such coordinates — a later drag-time local
+  // re-route rasterizes segments from them and used to hang forever.
+  it("drops non-finite coordinates when seeding", () => {
+    const st = useInteractiveSchematic.getState();
+    st.seedPositions(S1, {
+      A: { x: 10, y: 20 },
+      B: { x: Infinity, y: 5 },
+      C: { x: NaN, y: 5 },
+      D: { x: 3, y: -Infinity },
+    });
+    const positions = useInteractiveSchematic.getState().layouts[S1].positions;
+    expect(positions.A).toEqual({ x: 10, y: 20 });
+    expect(positions.B).toBeUndefined();
+    expect(positions.C).toBeUndefined();
+    expect(positions.D).toBeUndefined();
   });
 });

@@ -1,13 +1,15 @@
 import { create } from "zustand";
-import type { AnnotationRect, DieMLConfig } from "shared";
+import type { AnnotationRect, DieMLConfig, TraceRegion } from "shared";
 import type { AnnotationAction } from "../api/actions";
 import type { WireClipboard } from "../lib/wireClipboard";
 import type { PinClip } from "../lib/pinClipboard";
 import type { FloorplanClip } from "../lib/floorplanClipboard";
 
 /** Which right-panel tab is showing. The ML tab also drives a render mode:
- *  traces/vias size from `mlConfig` instead of display preferences. */
-export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp";
+ *  traces/vias size from `mlConfig` instead of display preferences. The
+ *  tab bar renders in TWO rows (Inspector/ML/Cells/CV/AI/Lib, then
+ *  Trace/MCP) — one row overflowed and produced a stray width scrollbar. */
+export type InspectorTab = "inspector" | "ml" | "cells" | "cv" | "ai" | "lib" | "mcp" | "trace";
 
 /** Mockup defaults for the ML config until a real per-die value is seeded
  *  from the annotations blob. Source-pixel units. */
@@ -47,7 +49,17 @@ export type ToolKind =
   | "comment"
   | "floorplan"
   | "analogRect"
-  | "analogPoly";
+  | "analogPoly"
+  | "traceRegionRect"
+  | "traceRegionPoly"
+  | "traceBlockage";
+
+/**
+ * P2-2: a committed vectorize trace region (now persisted per die in
+ * `annotations.traceRegions`, see shared/types `TraceRegion`). Kept as an
+ * alias so existing call sites keep working.
+ */
+export type VectorTraceRegion = TraceRegion;
 
 /**
  * Modes for `select`:
@@ -112,6 +124,33 @@ interface DieViewerState {
  *  having to walk the cache itself. Partial: it's the count for tiles
  *  fetched so far this session, not a die-wide ground truth. */
   mlViasCount: number;
+  /** Live status of the classical vectorize overlay (VectorSection): loading
+   *  flag, last error, decoded-trace count across cached regions, and the
+   *  last decode's width-filter drop stats. Written by the VectorizeLayer. */
+  vectorStatus: {
+    loading: boolean;
+    error: string | null;
+    traces: number;
+    droppedWidth?: number;
+    /** Octilinear decoder: chains kept raw with irregular=true. */
+    irregular?: number;
+    /** P2-3 preview state (see VectorizeLayer). */
+    preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
+  };
+  /** Vector pipette (VectorSection): armed → canvas clicks sample the metal
+   *  colour instead of the active tool. Samples accumulate for averaging;
+   *  each keeps where it was taken (the layer draws markers). */
+  vectorPipetteArmed: boolean;
+  vectorSamples: { rgb: [number, number, number]; x: number; y: number }[];
+  /** True while a whole-die vectorize sweep runs: the live viewport decode
+   *  pauses (it would fight the sweep for the sidecar's CV gate), the
+   *  overlay comes back from the block cache when the sweep ends. */
+  vectorSweepRunning: boolean;
+  /** SAVED whole-die vecto payloads for this die (Vector layers list in the
+   *  outline tree). Refreshed from `GET .../vectorize/layers`; the bump
+   *  version invalidates the react-query after a sweep completes. */
+  savedVectorLayers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[];
+  savedVectorVersion: number;
   /** Cell type picked in the Cells (detection) tab — from the dropdown or by
    *  selecting a placed cell on the canvas while the tab is open. */
   cellDetectionTypeId: string | null;
@@ -153,6 +192,21 @@ interface DieViewerActions {
   setMlConfig: (patch: Partial<DieMLConfig>) => void;
   /** Set the live ML-via cardinality — called by the layer when tiles load. */
   setMlViasCount: (count: number) => void;
+setVectorStatus: (status: {
+  loading: boolean;
+  error: string | null;
+  traces: number;
+  droppedWidth?: number;
+  irregular?: number;
+  /** P2-3 preview state, reported by the layer on every transition. */
+  preview?: { state: "off" | "fetching" | "ok" | "fail"; failures: number; error: string | null };
+}) => void;
+setVectorPipetteArmed: (armed: boolean) => void;
+addVectorSample: (sample: { rgb: [number, number, number]; x: number; y: number }) => void;
+clearVectorSamples: () => void;
+setVectorSweepRunning: (running: boolean) => void;
+setSavedVectorLayers: (layers: { hash: string; name?: string | null; traces: number; outlines: number; modified: string }[]) => void;
+bumpSavedVectorLayers: () => void;
   setCellDetectionTypeId: (id: string | null) => void;
   setCellDetectionsCount: (count: number) => void;
   setWireMapAvailable: (available: boolean) => void;
@@ -188,6 +242,12 @@ const INITIAL_STATE: DieViewerState = {
   showRulerNm: false,
   mlConfig: { ...DEFAULT_ML_CONFIG },
   mlViasCount: 0,
+  vectorStatus: { loading: false, error: null, traces: 0 },
+  vectorPipetteArmed: false,
+  vectorSamples: [],
+  vectorSweepRunning: false,
+  savedVectorLayers: [],
+  savedVectorVersion: 0,
   cellDetectionTypeId: null,
   cellDetectionsCount: 0,
   wireMapAvailable: false,
@@ -281,6 +341,60 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
     if (get().mlViasCount === count) return;
     set({ mlViasCount: count });
   },
+  setVectorStatus: (status) => {
+    const cur = get().vectorStatus;
+    if (
+      cur.loading === status.loading &&
+      cur.error === status.error &&
+      cur.traces === status.traces &&
+      cur.droppedWidth === status.droppedWidth &&
+      cur.irregular === status.irregular &&
+      // The preview lifecycle MUST also pass through — backgrounding it
+      // made the panel's status line stale while decode counters stood
+      // still (the 'preview status shows nothing' report).
+      cur.preview?.state === status.preview?.state &&
+      cur.preview?.failures === status.preview?.failures &&
+      cur.preview?.error === status.preview?.error
+    )
+      return;
+    set({ vectorStatus: status });
+  },
+  setVectorPipetteArmed: (armed) => set({ vectorPipetteArmed: armed }),
+  addVectorSample: (sample) =>
+    set((state) => ({ vectorSamples: [...state.vectorSamples, sample] })),
+  clearVectorSamples: () => set({ vectorSamples: [] }),
+  setVectorSweepRunning: (running) => {
+    if (get().vectorSweepRunning === running) return;
+    set({ vectorSweepRunning: running });
+  },
+  setSavedVectorLayers: (layers) => {
+    // Idempotent: writing an identical list is a no-op. This setter runs after
+    // every die list fetch, and it used to bump `savedVectorVersion` on each
+    // write — the fetch effect depends on that version → fetch → set → bump →
+    // fetch… an infinite loop that (a) hammered the backend and (b) full-
+    // invalidated ALL canvas tiles every iteration via the vector layer sync,
+    // i.e. the "after a page reload the whole viewer crawls" report. It also
+    // went undetected for a long time because a transient fetch ERROR breaks
+    // the loop (the .catch swallows, no set → no bump) — the "two states:
+    // sometimes it flies, sometimes it crawls" mystery. Explicit re-fetches
+    // (sweep done / manual refresh) go through bumpSavedVectorLayers.
+    const cur = get().savedVectorLayers;
+    if (cur.length === layers.length && cur.every((l, i) => {
+      const n = layers[i];
+      return (
+        l.hash === n.hash &&
+        (l.name ?? null) === (n.name ?? null) &&
+        l.traces === n.traces &&
+        l.outlines === n.outlines &&
+        l.modified === n.modified
+      );
+    })) {
+      return;
+    }
+    set({ savedVectorLayers: layers });
+  },
+  bumpSavedVectorLayers: () =>
+    set((state) => ({ savedVectorVersion: state.savedVectorVersion + 1 })),
   setCellDetectionTypeId: (id) => set({ cellDetectionTypeId: id }),
   setCellDetectionsCount: (count) => {
     if (get().cellDetectionsCount === count) return;
@@ -298,9 +412,10 @@ export const useDieViewerStore = create<DieViewerState & DieViewerActions>()((se
   setPinClipboard: (pins) => set({ clipboardPins: pins }),
   setFloorplanClipboard: (regions) => set({ clipboardFloorplans: regions }),
 
-  // The undo history is left alone: it is per die (see ensureHistoryFor), and
-  // the die viewer resets on every mount — coming back from Merge / RE cell
-  // must not lose what was done there.
+  // The undo history is left alone: it is per die (see ensureHistoryFor),
+  // and the die viewer resets on every mount — coming back from Merge /
+  // RE cell must not lose what was done there. Trace regions/blockages are
+  // persisted annotation collections now, so they need no special case.
   reset: () =>
     set((state) => ({
       ...INITIAL_STATE,

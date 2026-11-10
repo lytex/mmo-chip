@@ -23,3 +23,5 @@ desktop/testapp/
 desktop/package-lock.json
 desktop/launcher/target/
 desktop/electron-scratch/
+
+fe-dev-*.log

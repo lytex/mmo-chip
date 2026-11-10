@@ -389,6 +389,14 @@ export const Ic = {
     </>,
     { sw: 1.2 }
   ),
+  pipette: Icon(
+    <>
+      <path d="M10.2 3.4l1.2-1.2a1.4 1.4 0 012 0l.4.4a1.4 1.4 0 010 2L12.6 5.8z" />
+      <path d="M11.2 5L5.4 10.8l-.5 2.6 2.6-.5L13.3 7.1l-2.1-2.1z" />
+      <path d="M3.2 13.2l1.1-1.1" />
+    </>,
+    { sw: 1.2 }
+  ),
 };
 
 export function BrandMark(props: SVGProps<SVGSVGElement>) {

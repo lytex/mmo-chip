@@ -17,10 +17,15 @@ import type {
   MLModelsResponse,
   MLPrediction,
   MLSelectModelRequest,
-  MLServiceStatus
+  MLServiceStatus,
+  VectorBlocksResponse,
+  VectorLayerInfo,
+  VectorizeParams,
+  VectorizeResponse,
+  VectorSweepStatus
 } from "shared";
 import { subscribeToDie } from "./annotationsWebSocket";
-import { ApiError, apiGet, apiPost } from "./client";
+import { ApiError, apiDelete, apiGet, apiPost, authHeaders } from "./client";
 
 /**
  * Kick off the backend ML training-data export for a die. The backend crops
@@ -101,6 +106,207 @@ export function useDieVias(
 }
 
 // ── ML service status & models ───────────────────────────────────────
+
+/**
+ * Classical (no-model) metal vectorization of a die bbox in source-image
+ * (px) coords: `GET /api/dies/:dieId/vectorize`. The backend memory-caches
+ * per (source, bbox, params), so panning back with unchanged sliders is
+ * free. Plain function (no react-query) — the overlay layer drives fetching
+ * with its own viewport debounce.
+ */
+export async function vectorizeRegion(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<VectorizeResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  q.set("channel", params.channel);
+  q.set("invert", params.invert ? "1" : "0");
+  q.set("threshLow", String(params.threshLow));
+  q.set("threshHigh", String(params.threshHigh));
+  q.set("adaptive", params.adaptive ? "1" : "0");
+  q.set("adaptiveBlock", String(params.adaptiveBlock));
+  q.set("adaptiveC", String(params.adaptiveC));
+  q.set("openPx", String(params.openPx));
+  q.set("bridgePx", String(params.bridgePx));
+  q.set("minLength", String(params.minLength));
+  q.set("widthMin", String(params.widthMin));
+  q.set("widthMax", String(params.widthMax));
+  q.set("decoder", params.decoder);
+  q.set("octDeltaPx", String(params.octDeltaPx));
+  q.set("octStrict", params.octStrict ? "1" : "0");
+  if (params.preprocess) q.set("preprocess", JSON.stringify(params.preprocess));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<VectorizeResponse>(
+    `/api/dies/${dieId}/vectorize?${q.toString()}`,
+    signal
+  );
+}
+
+/** P2-3 preview: the preprocessed crop (usually the live viewport) as a
+ *  PNG blob — the VectorizeLayer blits it under traces/outlines so tuning
+ *  brightness/CLAHE/etc. happens while SEEING the processed pixels. */
+export async function fetchPreprocessPreview(
+  dieId: string,
+  bbox: [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<Blob> {
+  // Client-side deadline: during a stack restart the backend accepts the
+  // request and then sits dead-silent — without this the preview would
+  // hang forever with NO console output (the "clean console, dead
+  // preview" report).
+  const controller = new AbortController();
+  const timer = setTimeout(() => controller.abort(), 20_000);
+  if (signal) {
+    if (signal.aborted) controller.abort();
+    else signal.addEventListener("abort", () => controller.abort(), { once: true });
+  }
+  try {
+    const response = await fetch(`/api/dies/${dieId}/vectorize/preprocess-preview`, {
+      method: "POST",
+      headers: { "Content-Type": "application/json", ...authHeaders() },
+      body: JSON.stringify({
+        bbox,
+        preprocess: params.preprocess ?? {},
+        ...(overlaySource ? { overlaySource } : {})
+      }),
+      signal: controller.signal
+    });
+    if (!response.ok) {
+      let detail = `preprocess preview failed (${response.status})`;
+      try {
+        const j = (await response.json()) as { error?: string };
+        if (j?.error) detail = j.error;
+      } catch {
+        /* not JSON */
+      }
+      throw new Error(detail);
+    }
+    return response.blob();
+  } finally {
+    clearTimeout(timer);
+  }
+}
+
+/** Pipette readout: mean RGB of a small source region (the same image the
+ *  vectorize endpoint decodes — base or overlay). */
+export interface DiePixelSample {
+  r: number;
+  g: number;
+  b: number;
+  /** How many source pixels the mean covers. */
+  samples: number;
+}
+
+/** Mean colour of a die region in source-image (px) coords. Tiny regions
+ *  only (backend caps at 4096 px) — this is the vector pipette's eyedrop. */
+export async function sampleDieRegion(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<DiePixelSample> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<DiePixelSample>(`/api/dies/${dieId}/sample?${q.toString()}`, signal);
+}
+
+// ── Whole-die vectorize sweep (block jobs + disk cache) ──────────────
+
+/** Start a whole-die vectorize sweep (decodes every 2048-px block, caches
+ *  each under dataRoot/vectorize/<dieId>/<paramsHash>/). */
+export function startVectorSweep(
+  dieId: string,
+  params: VectorizeParams,
+  overlaySource?: string
+): Promise<VectorSweepStatus> {
+  return apiPost<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job/start`, {
+    params,
+    overlaySource
+  });
+}
+
+export function getVectorSweep(dieId: string): Promise<VectorSweepStatus> {
+  return apiGet<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job`);
+}
+
+export function stopVectorSweep(dieId: string): Promise<VectorSweepStatus> {
+  return apiPost<VectorSweepStatus>(`/api/dies/${dieId}/vectorize/job/stop`, {});
+}
+
+/** Cached sweep blocks for a bbox + params. `missing > 0` → the sweep hasn't
+ *  covered the region (or params differ) — caller falls back to live decode.
+ *  NB: decoder/oct params MUST be forwarded — the cache key (paramsHash)
+ *  includes them, and a mismatch turns every cached payload into a miss. */
+export async function fetchVectorBlocks(
+  dieId: string,
+  bbox: readonly [number, number, number, number],
+  params: VectorizeParams,
+  overlaySource?: string,
+  signal?: AbortSignal
+): Promise<VectorBlocksResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", bbox.join(","));
+  q.set("channel", params.channel);
+  q.set("invert", params.invert ? "1" : "0");
+  q.set("threshLow", String(params.threshLow));
+  q.set("threshHigh", String(params.threshHigh));
+  q.set("adaptive", params.adaptive ? "1" : "0");
+  q.set("adaptiveBlock", String(params.adaptiveBlock));
+  q.set("adaptiveC", String(params.adaptiveC));
+  q.set("openPx", String(params.openPx));
+  q.set("bridgePx", String(params.bridgePx));
+  q.set("minLength", String(params.minLength));
+  q.set("widthMin", String(params.widthMin));
+  q.set("widthMax", String(params.widthMax));
+  q.set("decoder", params.decoder);
+  q.set("octDeltaPx", String(params.octDeltaPx));
+  q.set("octStrict", params.octStrict ? "1" : "0");
+  if (params.preprocess) q.set("preprocess", JSON.stringify(params.preprocess));
+  if (overlaySource) q.set("overlaySource", overlaySource);
+  return apiGet<VectorBlocksResponse>(
+    `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,
+    signal
+  );
+}
+
+/** A pinned SAVED whole-die payload: fetched BY hash (any params set that
+ *  completed once), one VectorBlockPayload with the whole die. */
+export async function fetchVectorLayerBlocks(
+  dieId: string,
+  hash: string,
+  dieBox: readonly [number, number, number, number],
+  signal?: AbortSignal
+): Promise<VectorBlocksResponse> {
+  const q = new URLSearchParams();
+  q.set("bbox", dieBox.join(","));
+  q.set("hash", hash);
+  return apiGet<VectorBlocksResponse>(
+    `/api/dies/${dieId}/vectorize/blocks?${q.toString()}`,
+    signal
+  );
+}
+
+/** The Vector layers list for the left panel (saved whole-die payloads). */
+export function getVectorLayers(dieId: string, signal?: AbortSignal): Promise<VectorLayerInfo[]> {
+  return apiGet<VectorLayerInfo[]>(`/api/dies/${dieId}/vectorize/layers`, signal);
+}
+
+/** Rename a saved whole-die layer (Vector Layers tree ✎). */
+export function renameVectorLayer(dieId: string, hash: string, name: string): Promise<{ ok: boolean }> {
+  return apiPost(`/api/dies/${dieId}/vectorize/layers/${hash}/rename`, { name });
+}
+
+/** Delete a saved whole-die layer (payload + mask + params/name json). */
+export function deleteVectorLayer(dieId: string, hash: string): Promise<{ ok: boolean }> {
+  return apiDelete(`/api/dies/${dieId}/vectorize/layers/${hash}`);
+}
 
 /** Sidecar health — checkpoint name, device, training flag. */
 export function useMLStatus(): UseQueryResult<MLServiceStatus, ApiError> {

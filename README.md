@@ -252,6 +252,7 @@ Each device gets a stable UUID from `kind + position + subType`. Renames and par
 - **Net ID overlay:** human-readable net names on die viewer (toggle in side panel). VDD/GND hidden  
 - **Layout comments:** clickable annotation icons with text, author, replies (WebSocket sync)
 - **Keyboard shortcuts panel:** `Ctrl+/` opens a modal with all shortcuts grouped by category. `?` button in TopBar
+- **Perf HUD (optional):** fps / render ms / last render reason in the canvas corner (Settings → Die Viewer Settings)
 
 ---
 
@@ -264,6 +265,31 @@ Computer vision tools for automated cell instance detection. Available in the ri
 | **Template matching** | Stable | Sobel-based template matching against a reference crop. Main working method for cell detection. |
 | **AKAZE verify** | Optional | Compares detected cells pairwise via AKAZE keypoints. Cells below similarity threshold are removed. Used to filter false positives after template matching. |
 | **Contour detection** | Experimental | Tree-based contour matching. Not reliable yet. |
+
+---
+
+## Vectorization (Trace → Nets)
+
+The optional sidecar plugin can vectorize the metal routing from the die
+image automatically — the right panel's **Vectorize** tab drives it.
+
+- **Preprocessing with preview** — the viewed region is preprocessed on the
+  server; every slider repaints the preview immediately.
+- **Decode whole die or a selected region** — traces are extracted as
+  polylines; the whole-die sweep stitches block masks into ONE mask and
+  decodes them in a single pass, so no wire is ever cut at a tile seam.
+- **Traces become regular nets** — the same data model as hand-drawn wires:
+  the metal routing is drawn automatically with snapping to contacts lying
+  in the same traced area (each closed metal contour = one net); the result
+  is fully editable and undoable.
+- **Vector layers** — saved whole-die decodes stay pinned with per-layer
+  visibility and colours.
+
+Currently one metal level only — no via support yet; vias arrive in future
+versions.
+
+> Details: [docs/VECTOR_SKELETON.md](docs/VECTOR_SKELETON.md) ·
+> [docs/PHASE2_PLAN.md](docs/PHASE2_PLAN.md)
 
 ---
 
@@ -432,18 +458,41 @@ This is an alignment and bond-mapping tool, not a complete package design or mec
 
 ## LLM-Assisted Analysis
 
-The optional AI Assistant analyzes the extracted netlist and generates ranked hypothesis cards for possible circuit functions, device roles, or suspicious connectivity. Cards include confidence, reasoning, evidence, affected devices, and suggested checks. Hypotheses are locally checked for valid device references and connectivity before becoming interactive cards; this does not prove the electrical function.
+The optional read-only AI Assistant generates ranked hypothesis cards from the extracted netlist (confidence, evidence, affected devices, suggested checks) with per-card discussion chats.
 
-The assistant is read-only. It can display hypotheses on the die, open them in Net Graph, and show netlist or schematic fragments.
+Honest status: the in-app assistant flow is **clunky and verbose**; the plan is to move this analysis experience entirely to the **MCP server** (an LLM client working with the same data through per-die approved tools, see the section above). The hypothesis **"cards + per-card chats"** concept is the part worth keeping, so the feature stays for now — cards can display hypotheses on the die and open them in Net Graph, and LVS / vision / ngspice checks remain available as in-chat tools.
 
-During finding discussions, the model can use controlled tool calls when enabled:
+---
 
-- **`mmochip_lvs_check`** — compare a candidate subcircuit with the `analog-circuits-sky130` reference LVS library using topology matching. The active library can be selected, and users can add custom reference cells from SPICE/Spectre subcircuits.
-- **`mmochip_vision`** — request rendered die crops and overlay layers for multimodal models to inspect device geometry and terminal connectivity.
-- **`mmochip_spice_sim`** - run a server-side ngspice check of a hypothesis and return simulation measurements. The model writes only the testbench (the tool adds the extracted circuit itself), the tool normalises the netlist for ngspice, runs every requested analysis, and returns the node voltages plus the `.measure` results; a run that produced no data is reported as a failure instead of an empty success. The run is shown as a card in the discussion thread (netlist, measurements, warnings) with a button that opens it in the SPICE simulator.
-- **`mmochip_card_update`** — propose a structured update to an existing hypothesis card.
+## MCP Server
 
-Tool access is explicitly controlled by the user. The model proposes hypotheses and evidence; the user reviews and verifies the result.
+The backend serves a [Model Context Protocol](https://modelcontextprotocol.io)
+endpoint directly: **`POST /mcp`** (Streamable HTTP with JSON responses).
+
+```
+MCP client → POST http://<host>:<port>/mcp → backend (project data)
+```
+
+- **Clients:** Claude Code, Claude Desktop (`.mcpb` — `npm run mcpb`),
+  opencode, or any Streamable HTTP client. The active endpoint is shown in
+  the die viewer's **MCP** tab (`http://127.0.0.1:3101/mcp` in the local
+  desktop binary, `:3001` in dev).
+- **36 tools** in three groups:
+  *Read* — die info, annotations (paged + bbox filter), images/crops,
+  annotated renders, region summaries, wire search, SPICE/LVS configs;
+  *Markup* — comments/replies, floorplan regions, rulers, wires and vias
+  with strict ownership, cells/I-O pads (full-edit gate), batch annotation
+  editing; *Analysis* — netlist export (CDL/Spectre/HSPICE), ngspice runs
+  with publish-to-UI, rigid block simulation (`.SUBCKT` with inferred
+  ports), LVS, project ZIP export, ML/cell-detection jobs.
+- **Per-die approval:** the first call on a die nobody approved yet goes
+  pending for up to 50 s and must be accepted/denied in the GUI; the
+  decision persists per die.
+- **Write gates:** `off / create / edit / full` plus a separate wires
+  toggle; MCP writes have their own undo stack, independent of the viewer's
+  `Ctrl+Z`. Auth follows `JWT_SECRET` when set.
+
+> Full tool reference: [docs/mcp.md](docs/mcp.md)
 
 ---
 
@@ -535,15 +584,18 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 ## What's Not Done Yet (priority)
 
 - **DMOS, Schottky diode, VPNP, JFET** — no detection or markers  
-- **Wire matching** — tolerance = contact size × 0.5; dense routing may false-positive  
 - **Polyline post-edit** — stretch/reshape (only redraw from scratch)  
-- **Hierarchical netlist / floorplan** — interactive viewer supports it; alias collision + rename speed still need real-world validation
+- **Hierarchical netlist / floorplan** — interactive viewer supports it; alias collision + rename speed still need real-world validation  
+- **Vectorize tuning** — whole-die decode of dense layouts can over-bridge nets; per-process threshold tuning and a die-navigator confirm-by-one flow are still ahead
 
 ---
 
 ## ⚠️ Disclaimer
 
-**Still alpha / WIP.** Only unit tests for extraction (22 tests: 18 pass, 4 skip). No e2e tests, no tests for overlay, wire matching, SPICE export, or cross-tab navigation.
+**Still alpha / WIP.** Frontend: 487 unit tests (vitest) green. Backend:
+`node --test` suites for extraction / import / ML / MCP (a few
+Windows filesystem tests can flake while a dev stack holds temp files).
+No e2e, no tests for the full vectorize flow in packaged builds yet.
 
 ---
 
@@ -551,15 +603,20 @@ Overlay layer settings (visibility, opacity, offset) are persisted per-die in lo
 
 ```
 frontend/     Vite + React + TypeScript — die viewer, cell RE, analog netlist
-backend/      Node + TypeScript API — import, tiling, JSON persistence, WebSocket
+backend/      Node + TypeScript API — import, tiling, JSON persistence, WebSocket, MCP
 shared/       Shared TypeScript types
-ml/           Python U-Net (optional, assisted annotation)
+ml/           Python U-Net sidecar (traces/vias; optional plugin)
+desktop/      Electron launcher (local/--serve/--connect), staging manifest
 docs/
   analog-devices.md           ← analog device detection docs
   mos_detection.md            ← MOS pipeline (Clipper2, poly gate, metal merge)
   netlist_warnings.md         ← SPICE/CDL warnings reference
   problem-navigator.md        ← ProblemNavigator details
   lvs-plan.md                 ← LVS architecture
+  mcp.md                      ← MCP server / tools / write gates
+  DESKTOP_BUILD.md            ← desktop binary build + launch modes
+  VECTOR_SKELETON.md          ← trace vectorization pipeline (runs decoder, whole-die sweep)
+  PHASE2_PLAN.md              ← vectorize phases (regions, saved layers, preprocessing)
 ```
 
 Key extraction files: `dieWideAnalog.ts`, `simpleAnalog.ts`, `spice.ts` (`frontend/src/`).

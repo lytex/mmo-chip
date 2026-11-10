@@ -746,6 +746,31 @@ export interface IgnoreRect {
   height: number;
 }
 
+/** Vectorize trace region: traces are rendered + materialized only inside
+ *  region(s). `kind:"rect"` uses the x/y/width/height fields, `kind:"poly"`
+ *  uses the (implicitly closed) `points` vertex list. Coordinates are the
+ *  die's source px. */
+export interface TraceRegion {
+  id: string;
+  kind: "rect" | "poly";
+  x?: number;
+  y?: number;
+  width?: number;
+  height?: number;
+  points?: [number, number][];
+}
+
+/** Vectorize trace blockage: the inverse of a trace region — no traces are
+ *  rendered or materialized inside it, even when it sits inside a region
+ *  (blockage wins). A source-px rectangle, like `IgnoreRect`. */
+export interface TraceBlockage {
+  id: string;
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export interface DieMLConfig {
   /** Via radius in source px → Gaussian sigma = radius * 0.5. Chip-global. */
   pointViaSize: number;
@@ -844,6 +869,12 @@ export interface DieAnnotations {
   annotations?: HumanAnnotation[];
   rois?: ROIRectangle[];
   ignores?: IgnoreRect[];
+  /** Vectorize trace regions (rects/polygons) — traces render + materialize
+   *  only inside them. Absent ⇒ whole die. */
+  traceRegions?: TraceRegion[];
+  /** Vectorize trace blockages — no traces render/materialize inside them
+   *  (they take priority over regions). Absent ⇒ none. */
+  traceBlockages?: TraceBlockage[];
   /** Cell-placement guides (RE aid, not ML). Absent ⇒ none. */
   guides?: Guide[];
   /** Die-level analog/mixed-signal layer annotations (Phase 1).
@@ -910,9 +941,208 @@ export interface MLRegion {
 }
 
 /** trace decode (ch2). Source-image coords. v1 = contour polyline; a true
- *  skeleton→graph is the later assisted-tracing phase. */
+ *  skeleton→graph is the later assisted-tracing phase. `score` = mean model
+ *  probability inside the contour (absent in caches written before scoring
+ *  existed — treat as 1 = always visible). */
 export interface MLTracePolyline {
   points: [number, number][];
+  score?: number;
+  /** Median wire width in source px (distance-transform estimate). Set by
+   *  the vectorize decoder; absent for ML traces. */
+  widthPx?: number;
+  /** Runs-decoder connectivity group: traces sharing a group belong to one
+   *  physical wire / closed contour → one net (a contour cannot contain two
+   *  nets — that would be a virtual break). Absent for ML traces. */
+  group?: number;
+  /** True when the raw axis could NOT be honestly snapped to 0/45/90°
+   *  within delta (octilinear decoder) — the trace stays as drawn. */
+  irregular?: boolean;
+}
+
+/** Classical (no-model) metal vectorization: threshold a brightness/colour
+ *  channel of the source crop, clean the mask, then decode skeleton traces +
+ *  outline contours. All params are user-tunable live in the inspector. */
+export interface VectorizeParams {
+  /** Which channel to threshold: luma or a raw R/G/B plane. */
+  channel: "gray" | "r" | "g" | "b";
+  /** True → select DARK pixels (dark metal on bright die); else bright. */
+  invert: boolean;
+  /** Band-pass on the channel value (0..255): pixels accepted when
+   *  `low <= v <= high` (or outside when invert). high=255 ⇒ no upper cut. */
+  threshLow: number;
+  threshHigh: number;
+  /** Local (adaptive gaussian) threshold instead of the global band. */
+  adaptive: boolean;
+  /** Neighbourhood size (odd px) for the adaptive threshold. */
+  adaptiveBlock: number;
+  /** Adaptive offset C: pixel passes when value > localMean - C (bright). */
+  adaptiveC: number;
+  /** Morphological open radius — removes speckle before decoding. */
+  openPx: number;
+  /** Morphological close radius — bridges sub-threshold gaps in a wire. */
+  bridgePx: number;
+  /** Drop skeleton branches shorter than this (px). */
+  minLength: number;
+  /** Keep branches whose median corridor width (distance transform) is in
+   *  [widthMin, widthMax] px. 0 disables the respective bound. */
+  widthMin: number;
+  widthMax: number;
+  /** Trace decoder: "runs" = pixel-skeleton runs decoder (default);
+   *  "octilinear" = 0/45/90 deg-only centrelines via WL octilinear snap
+   *  (see docs/VECTOR_SKELETON.md). */
+  decoder: "runs" | "octilinear";
+  /** Max deviation of a snapped octilinear line from the raw axis (px).
+   *  0 = auto: max(0.75, widthMin/2) — drift no further than half the
+   *  thinnest kept wire. Chains not representable within delta stay raw
+   *  with `irregular: true`. */
+  octDeltaPx: number;
+  /** Hard octilinear mode (rubber-band guarantee) — reserved, not wired yet. */
+  octStrict: boolean;
+  /** P2-3: optional pre-processor applied to the crop BEFORE the
+   *  thresholding (tone LUT → denoise → CLAHE → unsharp). The goal is a
+   *  metal that is uniform + high-contrast FIRST; threshold/morphology are
+   *  then tuned on the already-preprocessed crop. All values neutral at
+   *  0 / 1 respectively. Absent / neutral = no pre-processing. Enters the
+   *  vector params hash, so changing it re-decodes (no stale cache). */
+  preprocess?: VectorizePreprocess;
+}
+
+/** Tonal + local pre-processing knobs (applied in the sidecar, per crop):
+ *  one composed tone LUT (brightness/contrast/gamma/shadows/highlights),
+ *  then median denoise, then CLAHE, then unsharp. Each stage is skipped
+ *  when its value is neutral. */
+export interface VectorizePreprocess {
+  /** Tone-level offset, -100..100 (8-bit levels), 0 = off. */
+  brightness: number;
+  /** Contrast factor around mid-gray, 0..2, 1 = off. */
+  contrast: number;
+  /** Gamma exponent (1 = neutral; >1 brightens shadows, <1 darkens). 0.2..5. */
+  gamma: number;
+  /** Shadow lift 0..100 — re-opens dark metal crushed by exposure. */
+  shadows: number;
+  /** Highlight compression 0..100 — pulls blown plates back into range. */
+  highlights: number;
+  /** CLAHE clip limit 0..10; 0 = off (tiles are irrelevant when off). */
+  claheClip: number;
+  /** CLAHE tile grid size 1..16 (claheTiles×claheTiles). */
+  claheTiles: number;
+  /** Unsharp-mask amount 0..200 (%). */
+  sharpenAmount: number;
+  /** Unsharp-mask radius 0.5..5 px. */
+  sharpenRadius: number;
+  /** Median-blur denoise radius 0..5 px; 0 = off. */
+  denoiseMedian: number;
+}
+
+/** The all-neutral preprocess (no-op) — the shared default. */
+export const NEUTRAL_VECTOR_PREPROCESS: VectorizePreprocess = {
+  brightness: 0,
+  contrast: 1,
+  gamma: 1,
+  shadows: 0,
+  highlights: 0,
+  claheClip: 0,
+  claheTiles: 8,
+  sharpenAmount: 0,
+  sharpenRadius: 1,
+  denoiseMedian: 0
+};
+
+/** Response of the vectorize endpoint: skeleton traces + mask outlines in
+ *  source-image coords. Not persisted — computed live while tuning. */
+export interface VectorizeResponse {
+  traces: MLTracePolyline[];
+  /** Outline polylines of the thresholded mask (the "what did the threshold
+   *  capture" preview). Same coords as traces; drawn as a light fill. */
+  outlines: [number, number][][];
+  /** [x0, y0, x1, y1] in source-image pixels - the region this covers. */
+  bbox: [number, number, number, number];
+  /** Why traces were dropped (width filter). Helps tuning: outlines show
+   *  metal but traces vanish → droppedWidth is the usual suspect. */
+  stats?: {
+    kept: number;
+    droppedWidth: number;
+    /** Branches shorter than Min length (noise arms — removed before
+     *  junction dissolving, so they don't split real wires). */
+    droppedShort?: number;
+    /** Collinear pass-through junctions dissolved (fragments re-joined). */
+    merged?: number;
+    /** Octilinear decoder: chains not honestly representable within delta
+     *  (kept raw with irregular: true). */
+    irregular?: number;
+  };
+}
+
+/** Live decode-phase progress of a whole-die sweep: the decode worker
+ *  writes progress.json (stage, pct, elapsed, eta) next to the payload;
+ *  the sweep reads it while phase === "decoding". */
+export interface VectorSweepDecodeProgress {
+  /** Decoder stage: queued / read / widthmap / skeletonize / graph / runs /
+   *  outlines / write. */
+  stage: string;
+  /** 0..100 (weighted estimate; the worker calibrates weights from the
+   *  previous run's per-stage durations). */
+  pct: number;
+  /** Milliseconds since the decode started. */
+  elapsedMs: number;
+  /** Milliseconds to completion estimate (null until pct > 0). */
+  etaMs: number | null;
+}
+
+/** Whole-die vectorize sweep (block-by-block, results cached on disk). */
+export interface VectorSweepStatus {
+  dieId: string;
+  status: "idle" | "running" | "completed" | "stopped" | "failed";
+  done: number;
+  total: number;
+  /** "masks" = assembling block masks (done/total), "decoding" = the one
+   *  whole-die decode is running (minutes — keep the app open). */
+  phase?: "masks" | "decoding" | null;
+  /** Decode-phase progress (present while running + decoding). */
+  decode?: VectorSweepDecodeProgress | null;
+  error?: string | null;
+  /** Non-fatal decode concern (e.g. "threshold captures ~N% of the die -
+   *  neighbouring wires likely merged"). Shown in the inspector, not an abort. */
+  warning?: string | null;
+  /** Cache key of the sweep's params - the block cache is keyed by it. */
+  paramsHash?: string;
+  overlayFilename?: string | null;
+}
+
+/** One SAVED whole-die vectorize payload (dataRoot/vectorize/<die>/<hash>/),
+ *  listed by the Vector layers panel. */
+export interface VectorLayerInfo {
+  /** Cache key (v1-<sha12>). */
+  hash: string;
+  /** User-assigned display name (rename in the Vector Layers tree); null
+   *  until renamed. */
+  name?: string | null;
+  traces: number;
+  outlines: number;
+  /** The params that produced it (written at completion); null for legacy
+   *  payloads without a params.json. */
+  params: VectorizeParams | null;
+  completedAt: string | null;
+  /** full.json mtime — sort key. */
+  modified: string;
+}
+
+/** One decoded 2048-px block of a whole-die sweep, from the disk cache. */
+export interface VectorBlockPayload {
+  col: number;
+  row: number;
+  /** Clamped source-px bbox of the block. */
+  bbox: [number, number, number, number];
+  traces: MLTracePolyline[];
+  outlines: [number, number][][];
+}
+
+/** Cached blocks for a bbox + params. `missing` > 0 → the sweep hasn't
+ *  covered everything yet (client falls back to live viewport decode). */
+export interface VectorBlocksResponse {
+  hash: string;
+  blocks: VectorBlockPayload[];
+  missing: number;
 }
 
 export interface MLPrediction {

@@ -23,7 +23,9 @@ import type {
   LayerShape,
   LayerType,
   ROIRectangle,
-  RulerMeasurement
+  RulerMeasurement,
+  TraceBlockage,
+  TraceRegion
 } from "shared";
 
 /**
@@ -116,6 +118,8 @@ export function createAnnotationsRouter(config: AnnotationsRouterConfig) {
   registerOptionalCollectionRoutes<HumanAnnotation>(router, config, notify, "annotations", "annotations");
   registerOptionalCollectionRoutes<ROIRectangle>(router, config, notify, "rois", "rois");
   registerOptionalCollectionRoutes<IgnoreRect>(router, config, notify, "ignores", "ignores");
+  registerOptionalCollectionRoutes<TraceRegion>(router, config, notify, "trace-regions", "traceRegions");
+  registerOptionalCollectionRoutes<TraceBlockage>(router, config, notify, "trace-blockages", "traceBlockages");
   registerOptionalCollectionRoutes<Guide>(router, config, notify, "guides", "guides");
   registerOptionalCollectionRoutes<RulerMeasurement>(router, config, notify, "rulers", "rulers");
   registerOptionalCollectionRoutes<CommentAnnotation>(router, config, notify, "comments", "comments");
@@ -424,7 +428,7 @@ function registerOptionalCollectionRoutes<T extends { id: string }>(
   config: { dataRoot: string },
   notify: (dieId: string, rev: number) => void,
   pathName: string,
-  field: "pins" | "annotations" | "rois" | "ignores" | "guides" | "rulers" | "comments" | "floorplanRegions"
+  field: "pins" | "annotations" | "rois" | "ignores" | "traceRegions" | "traceBlockages" | "guides" | "rulers" | "comments" | "floorplanRegions"
 ) {
   router.put(`/api/dies/:dieId/${pathName}/:id`, async (request, response, next) => {
     const { dieId, id } = request.params;

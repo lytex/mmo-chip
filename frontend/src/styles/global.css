@@ -757,6 +757,18 @@ input.switch[type="checkbox"]:focus-visible {
   }
 }
 
+/* Whole-die decode: indeterminate pulse while no progress.json has landed
+   yet (worker starting / legacy worker without progress reporting). */
+@keyframes vectorPulse {
+  0%,
+  100% {
+    opacity: 0.25;
+  }
+  50% {
+    opacity: 0.8;
+  }
+}
+
 /* Dark overrides (canvas-adjacent surfaces) */
 .dark .btn {
   background: #221f19;

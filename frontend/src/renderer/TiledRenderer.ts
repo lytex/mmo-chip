@@ -74,6 +74,13 @@ export class TiledRenderer {
   /** A snapshot is rendering: live frames pause so image layers keep the
    *  snapshot's tile requests instead of cancelling them as off-screen. */
   private snapshotting = false;
+  /** Per-frame layer draw accounting for the slow-frame log (below). */
+  private frameLayerMs = new Map<string, { ms: number; calls: number }>();
+  private lastSlowLog = 0;
+  /** Where the pending render came from — the slow-frame log names it, so
+   *  CONTINUOUS re-render spam (the same tiles redrawn every frame without
+   *  any user input) has a visible owner instead of being a mystery. */
+  private lastRenderReason = "(none)";
 
   constructor(canvas: HTMLCanvasElement, options: TiledRendererOptions = {}) {
     this.canvas = canvas;
@@ -175,6 +182,29 @@ export class TiledRenderer {
   }
 
   private requestRender() {
+    // Record the LAST caller that asked for a render this frame: the
+    // slow-frame log surfaces it. `new Error().stack` per call is worth it
+    // here — renders are frame-coalesced (dozens/sec at worst), and
+    // pinpointing a pathological invalidator is otherwise guesswork.
+    const stack = new Error().stack ?? "";
+    const frames = stack
+      .split("\n")
+      .slice(2, 6)
+      .map((s) => s.trim().replace(/^at\s+/, ""))
+      .filter(Boolean);
+    this.lastRenderReason = frames.join(" <- ") || "(unknown)";
+    // Short HUD label: first stack frame past the TiledRenderer internals,
+    // URLs stripped.
+    for (const f of frames) {
+      const stripped = f
+        .replace(/\((?:https?|file):[^)]*\)/g, "")
+        .replace(/(?:https?|file):\S*/g, "")
+        .trim();
+      if (stripped && !stripped.startsWith("TiledRenderer.")) {
+        rendererPerfStats.lastReason = stripped;
+        break;
+      }
+    }
     if (this.rafId !== null || this.destroyed) return;
     this.rafId = requestAnimationFrame(() => {
       this.rafId = null;
@@ -338,6 +368,8 @@ export class TiledRenderer {
     if (this.destroyed || this.snapshotting) return;
     const { tileSize, dpr, viewport: vp, ctx } = this;
     if (vp.zoom <= 0) return;
+    const frameT0 = performance.now();
+    this.frameLayerMs.clear();
 
     const tw = tileSize / vp.zoom;
     const visW = this.cssWidth;
@@ -408,6 +440,24 @@ export class TiledRenderer {
     }
 
     this.evictIfNeeded();
+
+    // Slow-frame diagnostics — the "floating performance" class of bugs is
+    // invisible in a busy UI but trivial when each offending frame names its
+    // layer, tile count and zoom. Fires only when a frame consumed ~2 fps
+    // budgets, and at most once per 2 s, so real gestures never spam.
+    const frameMs = performance.now() - frameT0;
+    rendererPerfStats.lastFrameMs = frameMs;
+    if (frameMs > 32 && performance.now() - this.lastSlowLog > 2000) {
+      this.lastSlowLog = performance.now();
+      const parts = [...this.frameLayerMs.entries()]
+        .sort((a, b) => b[1].ms - a[1].ms)
+        .map(([id, { ms, calls }]) => `${id} ${ms.toFixed(0)}ms×${calls} tiles`);
+      console.info(
+        `[perf] slow frame ${frameMs.toFixed(0)}ms @zoom ${vp.zoom.toFixed(3)} — reason: ${this.lastRenderReason}: ${
+          parts.join(", ") || "compositing only"
+        }`
+      );
+    }
   }
 
   private renderTile(i: number, j: number) {
@@ -445,10 +495,19 @@ export class TiledRenderer {
 
     for (const layer of this.layers) {
       tileCtx.save();
+      // Slow-frame accounting: when the whole frame overshoots a couple of
+      // 60fps budgets, the composite log names which layer ate the time.
+      const t0 = performance.now();
       try {
         layer.draw(tileCtx, bounds);
       } catch (error) {
         console.error(`[renderer] layer "${layer.id}" draw failed`, error);
+      } finally {
+        const ms = performance.now() - t0;
+        if (ms > 0) {
+          const acc = this.frameLayerMs.get(layer.id);
+          this.frameLayerMs.set(layer.id, { ms: (acc?.ms ?? 0) + ms, calls: (acc?.calls ?? 0) + 1 });
+        }
       }
       tileCtx.restore();
     }
@@ -463,3 +522,13 @@ export class TiledRenderer {
     }
   }
 }
+
+/** Live renderer stats for the optional on-screen HUD (PerfHud) — a tiny
+ *  mutable module store; the HUD polls it, the renderer pushes into it. */
+export const rendererPerfStats = {
+  /** Wall time of the last completed render pass (tile draws + composite), ms. */
+  lastFrameMs: 0,
+  /** Short label of who asked for the last render ("setViewport" gesture,
+   *  "VectorizeLayer.setSavedLayers", …). */
+  lastReason: "(idle)" as string,
+};

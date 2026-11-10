@@ -5,6 +5,8 @@ export const ANNOTATION_KIND_VALUES = [
   "roi",
   "pin",
   "ignore",
+  "traceRegion",
+  "traceBlockage",
   "floorplan",
   // Comment pins (CommentOverlay, DOM — not in the annotation layer).
   "comment"

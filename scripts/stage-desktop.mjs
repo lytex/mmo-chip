@@ -127,7 +127,7 @@ if (!skipInstall) {
     name: "mmo-chip-resources",
     private: true,
     dependencies: {
-      // Backend prod deps
+      // Backend prod deps — keep in sync with backend/package.json
       archiver: "^8.0.0",
       bcryptjs: "^2.4.3",
       cors: "^2.8.5",
@@ -135,6 +135,7 @@ if (!skipInstall) {
       jsonwebtoken: "^9.0.3",
       multer: "^2.0.1",
       sharp: "^0.34.2",
+      undici: "^7.12.0",
       ws: "^8.18.0",
       // The netlist-export child imports frontend/src TS at runtime, and that
       // module graph may touch any of the frontend's prod deps (rbush, elk …).

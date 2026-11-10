@@ -199,11 +199,16 @@ export const useInteractiveSchematic = create<
       seedPositions: (scopeKey, positions) =>
         set((state) => {
           const prev = layoutOf(state, scopeKey);
+          const seed: Record<string, DevicePos> = { ...prev.positions };
+          for (const [key, pos] of Object.entries(positions)) {
+            if (!isFinite(pos.x) || !isFinite(pos.y)) continue; // never persist garbage
+            seed[key] = pos;
+          }
           return {
             layouts: {
               ...state.layouts,
               [scopeKey]: {
-                positions: { ...prev.positions, ...positions },
+                positions: seed,
                 locked: prev.locked,
                 orientation: prev.orientation,
               },
@@ -242,8 +247,13 @@ export const useInteractiveSchematic = create<
           const positions: Record<string, DevicePos> = {};
           let changed = false;
           for (const [key, pos] of Object.entries(prev.positions)) {
-            if (valid.has(key)) positions[key] = pos;
-            else changed = true;
+            if (!valid.has(key)) { changed = true; continue; }
+            // Drop non-finite coordinates: scopes persisted before ELK layout
+            // results were validated can carry ±Infinity/NaN positions (ELK
+            // scanline-compaction bug). Rendering or locally re-routing from
+            // such garbage breaks wires and can hang the drag-time router.
+            if (!isFinite(pos.x) || !isFinite(pos.y)) { changed = true; continue; }
+            positions[key] = pos;
           }
           const locked: Record<string, boolean> = {};
           for (const [key, v] of Object.entries(prev.locked)) {

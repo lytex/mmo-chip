@@ -281,7 +281,7 @@ export function FloorplanRegionPopover({
               resolved = `${alias}_${suffix}`;
               setSaveWarnings((prev) => [
                 ...prev,
-                `"${alias}" → "${resolved}" (конфликт имени)`
+                `"${alias}" → "${resolved}" (name conflict)`
               ]);
             }
             usedNames.add(resolved);

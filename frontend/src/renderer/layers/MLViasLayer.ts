@@ -1,4 +1,4 @@
-import type { DieMetadata, ImageFlip, MLPrediction, MLViasTilesResponse } from "shared";
+import type { DieMetadata, ImageFlip, MLTracePolyline, MLPrediction, MLViasTilesResponse } from "shared";
 import {
   pointInRect,
   rectsIntersect,
@@ -104,6 +104,10 @@ const MAX_VIEWPORT_FETCH = 4096;
 // actually heavy. Pending fetches queue and dispatch as slots free.
 const MAX_INFLIGHT_FETCHES = 4;
 const IRREGULAR_STROKE_PX = 1;
+// ML trace overlay (v2 skeleton decode of the model's trace channel): cyan,
+// to read as "model's metal" — distinct from the green vias and user nets.
+const ML_TRACE_STROKE = "rgba(103, 232, 249, 0.9)";
+const ML_TRACE_SNAP_STROKE = "rgba(103, 232, 249, 0.65)";
 
 /** Block key (`${bx}/${by}`) a native tile belongs to. */
 function blockKey(tx: number, ty: number): string {
@@ -123,6 +127,17 @@ interface CachedViasTile {
 export interface MLViasDisplay {
   /** True → don't paint anything at all. */
   getHidden?: () => boolean;
+  /** True → don't paint the trace overlay (the vias stay visible). Absent
+   *  ⇒ traces are drawn whenever the layer itself is visible. */
+  getTracesHidden?: () => boolean;
+  /** Minimum mean probability inside the contour (0..1) for a trace
+   *  polyline to be drawn. Traces without a score (old caches) always pass.
+   *  Absent ⇒ 0 (show everything). */
+  getTraceConfidenceThreshold?: () => number;
+  /** Device contacts / cell terminals / IO pins as trace-endpoint snap
+   *  targets (the same candidates the wire tool offers). Return the snapped
+   *  point when one is within `tolWorld`, else null. Absent ⇒ no snap. */
+  findSnapTarget?: (world: Point, tolWorld: number) => { x: number; y: number; label: string } | null;
   /** Point-via render radius (world / source-pixel units). Same value is
    *  used by the snap-to-via tolerance via `findNearestPointVia(world,
    *  radius)`. Absent ⇒ default. */
@@ -178,6 +193,11 @@ export class MLViasLayer implements Layer {
   private readonly dieId: string;
   private readonly metadata: DieMetadata;
   private readonly cache = new Map<string, CachedViasTile>();
+  /** Memoized trace-endpoint snap lookups (`"x:y"` → target or null). The
+   *  lookup scans every cached via; without the memo it ran per endpoint
+   *  per frame and lagged the canvas with thousands of cached detections.
+   *  Cleared whenever tile data changes (loads, retry, clear). */
+  private readonly snapCache = new Map<string, { x: number; y: number } | null>();
   /** Block keys (`${bx}/${by}`) already fetched — prevents re-requesting a
    *  block every frame. Cleared on `retryFailed()` (job-progress drives a
    *  refetch of unloaded tiles) and on `clearCache()` (model switch). */
@@ -452,9 +472,32 @@ export class MLViasLayer implements Layer {
   clearCache(): void {
     this.cache.clear();
     this.requestedBlocks.clear();
+    this.snapCache.clear();
     this.fetchQueue.length = 0;
     this.notifyCountChange();
     this.invalidateCb?.();
+  }
+
+  /**
+   * Every decoded trace polyline held in the cache, deduplicated. A trace
+   * crossing tile borders overlaps several keep-boxes, so the backend
+   * repeats the full polyline in each — dedupe by the rounded point
+   * sequence (decodes emit integer coordinates, identical across repeats).
+   * Used by the traces→nets materialization.
+   */
+  collectTraces(): MLTracePolyline[] {
+    const seen = new Set<string>();
+    const out: MLTracePolyline[] = [];
+    for (const tile of this.cache.values()) {
+      if (!tile.loaded || !tile.data) continue;
+      for (const t of tile.data.traces) {
+        const key = t.points.map((p) => `${Math.round(p[0])},${Math.round(p[1])}`).join(";");
+        if (seen.has(key)) continue;
+        seen.add(key);
+        out.push(t);
+      }
+    }
+    return out;
   }
 
   /**
@@ -490,7 +533,11 @@ export class MLViasLayer implements Layer {
   }
 
   draw(ctx: CanvasRenderingContext2D, bounds: TileBounds): void {
-    if (this.display.getHidden?.()) return;
+    // Vias and traces hide independently: bail out only when BOTH overlays
+    // are off (fetches below run for whichever is still visible).
+    const viasHidden = this.display.getHidden?.() ?? false;
+    const tracesHidden = this.display.getTracesHidden?.() ?? false;
+    if (viasHidden && tracesHidden) return;
     const { world, zoom } = bounds;
     const flip = this.display.getFlip?.();
     // Tiles are addressed in raw image space.
@@ -565,7 +612,7 @@ export class MLViasLayer implements Layer {
       };
       if (!rectsIntersect(tileRect, rawWorld)) continue;
       if (!tile.loaded || !tile.data) continue;
-      const { pointVias, irregularVias } = tile.data;
+      const { pointVias, irregularVias, traces } = tile.data;
       const sel = this.selectedViaIds;
       const hasSel = sel.size > 0;
       const selectR = pointR * SELECT_NODE_MULT;
@@ -576,7 +623,7 @@ export class MLViasLayer implements Layer {
       // (same as the human via annotation style). Selected ones use the
       // shared SELECT_COLOR + white ring for parity with the manual via
       // annotation drawing path (see dieAnnotations.ts).
-      for (const v of pointVias) {
+      for (const v of viasHidden ? [] : pointVias) {
         if (v.score < minScore) continue;
         const selected = hasSel && sel.has(mlViaId(v.x, v.y));
         // Determine colour: via layer override > default via color
@@ -602,7 +649,7 @@ export class MLViasLayer implements Layer {
         }
       }
       // Irregular vias: bbox outline + translucent fill (selected: orange).
-      for (const reg of irregularVias) {
+      for (const reg of viasHidden ? [] : irregularVias) {
         if (reg.score < minScore) continue;
         const [x, y, w, h] = reg.bbox;
         const cx = reg.centroid[0];
@@ -614,6 +661,51 @@ export class MLViasLayer implements Layer {
         ctx.lineWidth = selected ? selectStroke : stroke;
         ctx.fillRect(x, y, w, h);
         ctx.strokeRect(x, y, w, h);
+      }
+      // ML traces (v2 decode): skeleton centreline polylines of the model's
+      // trace channel — thin lines whose ENDS are meaningful coordinates.
+      // Each end snaps to the nearest ML via (layer's own cache) or device
+      // contact / cell terminal / IO pin (via `findSnapTarget`); the snap
+      // draws a short connector + ring so the user sees the proposed
+      // connection without mutating any data. Toggleable independently of
+      // the vias via `getTracesHidden`.
+      if (!this.display.getTracesHidden?.()) {
+        const minTraceScore = this.display.getTraceConfidenceThreshold?.() ?? 0;
+        const snapTol = Math.max(8, worldR * 2);
+        ctx.lineWidth = stroke;
+        for (const t of traces) {
+          if ((t.score ?? 1) < minTraceScore) continue;
+          const pts = t.points;
+          if (pts.length < 2) continue;
+          ctx.beginPath();
+          ctx.moveTo(pts[0][0], pts[0][1]);
+          for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+          ctx.strokeStyle = ML_TRACE_STROKE;
+          ctx.stroke();
+      // Endpoint snapping: ML via first (this layer's cache), then the
+      // wire tool's contact/terminal/pin candidates. Results are memoized
+      // per endpoint coordinate — the lookup scans every cached via, and
+      // doing that per frame was the trace-overlay lag.
+      for (const end of [pts[0], pts[pts.length - 1]]) {
+        const key = `${end[0]}:${end[1]}`;
+        let target = this.snapCache.get(key);
+        if (target === undefined) {
+          const viaHit = this.findNearestPointVia({ x: end[0], y: end[1] }, snapTol);
+          target = viaHit ?? this.display.findSnapTarget?.({ x: end[0], y: end[1] }, snapTol) ?? null;
+          this.snapCache.set(key, target);
+        }
+        if (!target) continue;
+        ctx.beginPath();
+        ctx.moveTo(end[0], end[1]);
+        ctx.lineTo(target.x, target.y);
+        ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+        ctx.stroke();
+        ctx.beginPath();
+        ctx.arc(target.x, target.y, Math.max(pointR, 3 / zoom), 0, Math.PI * 2);
+        ctx.strokeStyle = ML_TRACE_SNAP_STROKE;
+        ctx.stroke();
+      }
+        }
       }
     }
   }
@@ -690,6 +782,7 @@ export class MLViasLayer implements Layer {
             entry.failed = false;
             returned.add(key);
           }
+          this.snapCache.clear(); // new geometry → re-resolve trace snaps
           // Block tiles with no cached prediction → failed, so a later
           // `retryFailed` (fired as the inference job advances) re-fetches.
           for (let tx = tx0; tx <= tx1; tx++) {

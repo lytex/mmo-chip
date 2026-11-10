@@ -14,6 +14,7 @@ import {
   blockDevices,
   blockSize,
   WireGrid,
+  elkResultIsSane,
   type LocalRouteOptions,
   type TracedEdge,
   type WireData,
@@ -498,6 +499,65 @@ describe("WireGrid (wire-wire spacing)", () => {
     // With gap=0, cell size clamps to 2. Segment on wire still scores.
     const prox = grid.proximityLength({ x: 0, y: 0 }, { x: 10, y: 0 });
     expect(prox).toBeGreaterThan(0);
+  });
+
+  // Regression for the project-hang bug: an ELK result that slipped
+  // through validation with ±Infinity geometry used to deadlock the
+  // rasterizer's unit-step loop (`for i=0; i<=Infinity; ...`) — with a
+  // silently frozen tab and no console output. These tests would TIME
+  // OUT before the guard existed.
+  it("rasterizes an infinite-length segment without hanging", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: Infinity, y: 0 } }], 10);
+    expect(grid.proximityLength({ x: 0, y: 5 }, { x: 10, y: 5 })).toBe(0);
+  }, 2000);
+
+  it("ignores NaN segments", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: NaN, y: 0 } }], 10);
+    expect(grid.proximityLength({ x: 0, y: 5 }, { x: 10, y: 5 })).toBe(0);
+  }, 2000);
+
+  it("proximityLength on a non-finite query segment is 0 (no hang)", () => {
+    const grid = new WireGrid([{ a: { x: 0, y: 0 }, b: { x: 100, y: 0 } }], 10);
+    expect(grid.proximityLength({ x: 0, y: 0 }, { x: Infinity, y: 0 })).toBe(0);
+    expect(grid.proximityLength({ x: 0, y: 0 }, { x: 100, y: NaN })).toBe(0);
+  }, 2000);
+});
+
+describe("elkResultIsSane (ELK scanline-compaction garbage detector)", () => {
+  const section = (pts: Array<[number, number]>, bends: Array<[number, number]> = []) => ({
+    startPoint: { x: pts[0][0], y: pts[0][1] },
+    endPoint: { x: pts[1][0], y: pts[1][1] },
+    bendPoints: bends.map(([x, y]) => ({ x, y })),
+  });
+  const saneResult = {
+    width: 100, height: 100,
+    children: [{ x: 10, y: 20 }],
+    edges: [{ sections: [section([[0, 0], [50, 50]], [[25, 25]])] }],
+  };
+
+  it("accepts a finite result", () => {
+    expect(elkResultIsSane(saneResult)).toBe(true);
+  });
+
+  it("rejects ±Infinity / NaN in child positions", () => {
+    expect(elkResultIsSane({ ...saneResult, children: [{ x: 10, y: Infinity }] })).toBe(false);
+    expect(elkResultIsSane({ ...saneResult, children: [{ x: NaN, y: 20 }] })).toBe(false);
+  });
+
+  it("rejects ±Infinity in edge geometry", () => {
+    const bad = { ...saneResult, edges: [{ sections: [section([[0, 0], [Infinity, 50]])] }] };
+    expect(elkResultIsSane(bad)).toBe(false);
+    const badBend = { ...saneResult, edges: [{ sections: [section([[0, 0], [50, 50]], [[Infinity, 25]])] }] };
+    expect(elkResultIsSane(badBend)).toBe(false);
+  });
+
+  it("rejects non-finite graph bbox", () => {
+    expect(elkResultIsSane({ ...saneResult, height: Infinity })).toBe(false);
+    expect(elkResultIsSane({ ...saneResult, width: NaN })).toBe(false);
+  });
+
+  it("tolerates absent children/edges (empty graph)", () => {
+    expect(elkResultIsSane({ width: 0, height: 0 })).toBe(true);
   });
 });
 

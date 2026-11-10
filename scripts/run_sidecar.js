@@ -4,7 +4,9 @@ const path = require("path");
 
 const isWin = process.platform === "win32";
 const pythonDir = path.join("ml", ".venv", isWin ? "Scripts" : "bin");
-const pythonExe = path.join(pythonDir, isWin ? "python.exe" : "python");
+// ML_PYTHON overrides the interpreter: point it at another venv (e.g. the
+// desktop app's plugin venv with GPU torch) without touching the repo venv.
+const pythonExe = process.env.ML_PYTHON || path.join(pythonDir, isWin ? "python.exe" : "python");
 const script = path.join("ml", "sidecar.py");
 
 const cp = spawn(pythonExe, [script], {

@@ -256,7 +256,12 @@ export function createMLPredictor(config: {
         if (y > maxy) maxy = y;
       }
       const overlaps = !(maxx <= kx0 || minx >= kx1 || maxy <= ky0 || miny >= ky1);
-      if (overlaps) traces.push({ points: pts });
+      if (!overlaps) continue;
+      const score = (t as { score?: unknown }).score;
+      traces.push({
+        points: pts,
+        ...(typeof score === "number" && Number.isFinite(score) ? { score } : {})
+      });
     }
 
     let heatmapTilePng: Buffer | undefined;
@@ -277,7 +282,10 @@ export function createMLPredictor(config: {
   }
 
   function cacheDirFor(dieId: string, hash: string | null): string {
-    return path.join(config.dataRoot, "predictions", dieId, hash ?? "nohash");
+    // "v3-" prefix: decode-version tag. v3 lowered the trace binarization
+    // threshold and bridges small mask gaps before skeletonizing — tiles
+    // cached by older decodes carry fragmentary geometry.
+    return path.join(config.dataRoot, "predictions", dieId, `v3-${hash ?? "nohash"}`);
   }
 
   function tileCachePath(

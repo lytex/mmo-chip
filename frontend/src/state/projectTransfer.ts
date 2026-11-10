@@ -54,7 +54,7 @@ export const useProjectTransfer = create<ProjectTransferStore>((set) => ({
   fail: (message) => {
     set((state) =>
       state.transfer
-        ? { transfer: { ...state.transfer, phase: "Ошибка передачи", active: false, error: message } }
+        ? { transfer: { ...state.transfer, phase: "Transfer failed", active: false, error: message } }
         : state
     );
   },

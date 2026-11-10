@@ -11,7 +11,9 @@ import {
 import {
   buildAnnotation,
   buildIgnore,
-  buildRoiRect
+  buildRoiRect,
+  buildTraceBlockage,
+  buildTraceRegion
 } from "../../renderer/annotations/dieAnnotations";
 import type { Annotation, AnnotationLayer } from "../../renderer/layers/AnnotationLayer";
 import type { DragHandler } from "../../renderer/interaction";
@@ -135,6 +137,55 @@ export function resolveEditable(
         kind: "upsertIgnore",
         ignore: { ...i0, ...rRect(r) },
         prevIgnore: i0
+      })
+    };
+  }
+
+  if (prefix === "traceRegion") {
+    const r0 = ann.traceRegions?.find((x) => x.id === eid);
+    if (!r0) return null;
+    if (r0.kind === "rect") {
+      return {
+        kind: "rect",
+        rect: { x: r0.x ?? 0, y: r0.y ?? 0, width: r0.width ?? 0, height: r0.height ?? 0 },
+        rebuild: (r) => buildTraceRegion({ ...r0, ...r, kind: "rect" }),
+        toAction: (r) => ({
+          kind: "upsertTraceRegion",
+          region: { ...r0, kind: "rect", ...rRect(r) },
+          prevRegion: r0
+        })
+      };
+    }
+    // Polygon region: per-vertex reshape + body move.
+    const initial: Point[] = (r0.points ?? []).map(([x, y]) => ({ x, y }));
+    return {
+      kind: "poly",
+      points: initial,
+      rebuild: (pts) =>
+        buildTraceRegion({ ...r0, kind: "poly", points: pts.map((p) => [p.x, p.y]) }),
+      toAction: (pts) => ({
+        kind: "upsertTraceRegion",
+        region: {
+          ...r0,
+          kind: "poly",
+          points: pts.map((p) => [Math.round(p.x), Math.round(p.y)] as [number, number])
+        },
+        prevRegion: r0
+      })
+    };
+  }
+
+  if (prefix === "traceBlockage") {
+    const b0 = ann.traceBlockages?.find((x) => x.id === eid);
+    if (!b0) return null;
+    return {
+      kind: "rect",
+      rect: { x: b0.x, y: b0.y, width: b0.width, height: b0.height },
+      rebuild: (r) => buildTraceBlockage({ ...b0, ...r }),
+      toAction: (r) => ({
+        kind: "upsertTraceBlockage",
+        blockage: { ...b0, ...rRect(r) },
+        prevBlockage: b0
       })
     };
   }

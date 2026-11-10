@@ -15,7 +15,9 @@ import type {
   IOPin,
   ROIRectangle,
   ProcessConfig,
-  RulerMeasurement as Ruler
+  RulerMeasurement as Ruler,
+  TraceBlockage,
+  TraceRegion
 } from "shared";
 import type { NetChange } from "../lib/netGraph";
 import { flipAnnotations, type CellTypeSizes, type FlipAxis, type ImageSize } from "../lib/imageFlip";
@@ -64,6 +66,10 @@ export type AnnotationAction =
   | { kind: "removeRoi"; roi: ROIRectangle }
   | { kind: "upsertIgnore"; ignore: IgnoreRect; prevIgnore: IgnoreRect | null }
   | { kind: "removeIgnore"; ignore: IgnoreRect }
+  | { kind: "upsertTraceRegion"; region: TraceRegion; prevRegion: TraceRegion | null }
+  | { kind: "removeTraceRegion"; region: TraceRegion }
+  | { kind: "upsertTraceBlockage"; blockage: TraceBlockage; prevBlockage: TraceBlockage | null }
+  | { kind: "removeTraceBlockage"; blockage: TraceBlockage }
   | { kind: "upsertGuide"; guide: Guide; prevGuide: Guide | null }
   | { kind: "removeGuide"; guide: Guide }
   | { kind: "setUmPerPx"; umPerPx: number; prevUmPerPx: number | null }
@@ -157,6 +163,26 @@ export function inverseOf(action: AnnotationAction): AnnotationAction {
           };
     case "removeIgnore":
       return { kind: "upsertIgnore", ignore: action.ignore, prevIgnore: null };
+    case "upsertTraceRegion":
+      return action.prevRegion === null
+        ? { kind: "removeTraceRegion", region: action.region }
+        : {
+            kind: "upsertTraceRegion",
+            region: action.prevRegion,
+            prevRegion: action.region
+          };
+    case "removeTraceRegion":
+      return { kind: "upsertTraceRegion", region: action.region, prevRegion: null };
+    case "upsertTraceBlockage":
+      return action.prevBlockage === null
+        ? { kind: "removeTraceBlockage", blockage: action.blockage }
+        : {
+            kind: "upsertTraceBlockage",
+            blockage: action.prevBlockage,
+            prevBlockage: action.blockage
+          };
+    case "removeTraceBlockage":
+      return { kind: "upsertTraceBlockage", blockage: action.blockage, prevBlockage: null };
     case "upsertGuide":
       return action.prevGuide === null
         ? { kind: "removeGuide", guide: action.guide }
@@ -283,6 +309,26 @@ export function applyAction(annotations: DieAnnotations, action: AnnotationActio
       return {
         ...annotations,
         ignores: removeById(annotations.ignores ?? [], action.ignore.id)
+      };
+    case "upsertTraceRegion":
+      return {
+        ...annotations,
+        traceRegions: upsertById(annotations.traceRegions ?? [], action.region)
+      };
+    case "removeTraceRegion":
+      return {
+        ...annotations,
+        traceRegions: removeById(annotations.traceRegions ?? [], action.region.id)
+      };
+    case "upsertTraceBlockage":
+      return {
+        ...annotations,
+        traceBlockages: upsertById(annotations.traceBlockages ?? [], action.blockage)
+      };
+    case "removeTraceBlockage":
+      return {
+        ...annotations,
+        traceBlockages: removeById(annotations.traceBlockages ?? [], action.blockage.id)
       };
     case "upsertGuide":
       return {
@@ -422,6 +468,20 @@ export async function requestAction(
       );
     case "removeIgnore":
       return apiDelete(`/api/dies/${dieId}/ignores/${action.ignore.id}`);
+    case "upsertTraceRegion":
+      return apiPut(
+        `/api/dies/${dieId}/trace-regions/${action.region.id}`,
+        action.region
+      );
+    case "removeTraceRegion":
+      return apiDelete(`/api/dies/${dieId}/trace-regions/${action.region.id}`);
+    case "upsertTraceBlockage":
+      return apiPut(
+        `/api/dies/${dieId}/trace-blockages/${action.blockage.id}`,
+        action.blockage
+      );
+    case "removeTraceBlockage":
+      return apiDelete(`/api/dies/${dieId}/trace-blockages/${action.blockage.id}`);
     case "upsertGuide":
       return apiPut(`/api/dies/${dieId}/guides/${action.guide.id}`, action.guide);
     case "removeGuide":

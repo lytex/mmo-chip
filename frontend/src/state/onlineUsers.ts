@@ -19,7 +19,18 @@ export const useOnlineUsers = create<OnlineUsersState>()((set, get) => ({
   users: [],
 
   setUsers(users) {
-    set({ users });
+    // Dedupe by userId: the server keys presence per WebSocket connection,
+    // and one user can hold two sockets (a stale half-open connection plus
+    // its reconnect). A duplicated list used to reach the render layer as
+    // non-unique React keys (`OnlineUsersPanel`), spamming console warnings
+    // on every re-render.
+    const seen = new Set<string>();
+    const unique = users.filter((u) => {
+      if (seen.has(u.userId)) return false;
+      seen.add(u.userId);
+      return true;
+    });
+    set({ users: unique });
   },
 
   addUser(user) {

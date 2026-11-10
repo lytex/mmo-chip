@@ -73,6 +73,14 @@ export function useSelectionDelete(opts: {
           const ignore = a?.ignores?.find((v) => v.id === eid);
           return ignore ? { kind: "removeIgnore", ignore } : null;
         }
+        case "traceRegion": {
+          const region = a?.traceRegions?.find((v) => v.id === eid);
+          return region ? { kind: "removeTraceRegion", region } : null;
+        }
+        case "traceBlockage": {
+          const blockage = a?.traceBlockages?.find((v) => v.id === eid);
+          return blockage ? { kind: "removeTraceBlockage", blockage } : null;
+        }
         case "pin": {
           const pin = a?.pins?.find((v) => v.id === eid);
           return pin ? { kind: "removePin", pin } : null;

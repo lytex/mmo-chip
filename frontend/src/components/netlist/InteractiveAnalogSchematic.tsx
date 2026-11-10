@@ -572,8 +572,14 @@ export function InteractiveAnalogSchematic({
       const changedKeys: string[] = [];
       const toApply: Record<string, Point> = {};
       for (const [key, p] of Object.entries(res.positions)) {
-        const useStored = !ignoreStored && stored[key] != null;
-        final[key] = useStored ? stored[key] : p;
+        // Guards against corrupted persisted state: a scope layout saved in
+        // localStorage can contain ±Infinity/NaN coordinates (e.g. snapped up
+        // from a buggy ELK run before layout-result validation existed).
+        // Treat such entries as absent so the fresh finite ELK position wins.
+        const sp = stored[key];
+        const storedOk = sp != null && isFinite(sp.x) && isFinite(sp.y);
+        const useStored = !ignoreStored && storedOk;
+        final[key] = useStored ? sp : p;
         if (!useStored) toApply[key] = p;
         if (Math.abs(final[key].x - p.x) > 0.5 || Math.abs(final[key].y - p.y) > 0.5) {
           // ELK routed this net assuming its own position — re-route locally.

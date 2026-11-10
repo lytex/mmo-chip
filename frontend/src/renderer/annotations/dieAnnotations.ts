@@ -5,7 +5,9 @@ import type {
   HumanAnnotation,
   IgnoreRect,
   IOPin,
-  ROIRectangle
+  ROIRectangle,
+  TraceBlockage,
+  TraceRegion
 } from "shared";
 import { scaleRect } from "shared/cellLibrary";
 import { cellInstanceScale, cellWorldRect } from "../../lib/cellFootprint";
@@ -28,6 +30,10 @@ import {
   COLOR_PIN,
   COLOR_PIN_FILL,
   COLOR_ROI,
+  COLOR_TRACE_BLOCKAGE,
+  COLOR_TRACE_BLOCKAGE_FILL,
+  COLOR_TRACE_REGION,
+  COLOR_TRACE_REGION_FILL,
   COLOR_VIA,
   COLOR_VIA_FILL,
   NET_COLOR,
@@ -221,6 +227,8 @@ export function populateAnnotationLayer(
   }
   for (const r of annotations.rois ?? []) layer.add(buildRoiRect(r));
   for (const r of annotations.ignores ?? []) layer.add(buildIgnore(r));
+  for (const r of annotations.traceRegions ?? []) layer.add(buildTraceRegion(r));
+  for (const b of annotations.traceBlockages ?? []) layer.add(buildTraceBlockage(b));
   const getPinNamesVisible = options.pinNamesVisible ?? (() => true);
   const getPinSize = options.pinSize ?? (() => PIN_DEFAULT_SIZE);
   for (const p of annotations.pins ?? []) layer.add(buildPin(p, getPinNamesVisible, getPinSize));
@@ -513,6 +521,96 @@ export function buildIgnore(r: IgnoreRect): Annotation {
       ctx.fillRect(r.x, r.y, r.width, r.height);
       ctx.strokeRect(r.x, r.y, r.width, r.height);
       ctx.setLineDash([]);
+    }
+  };
+}
+
+/** Vectorize trace region contour — the committed rect/poly region drawn on
+ *  the die: cyan-blue outer contour + faint fill (matches the draft colour).
+ *  Visibility is toggled via the "traceRegion" kind (default off). */
+export function buildTraceRegion(region: TraceRegion): Annotation {
+  const pts = region.kind === "poly" ? region.points ?? [] : null;
+  let bbox: Rect;
+  if (region.kind === "rect") {
+    bbox = { x: region.x ?? 0, y: region.y ?? 0, width: region.width ?? 0, height: region.height ?? 0 };
+  } else {
+    let minX = Infinity, minY = Infinity, maxX = -Infinity, maxY = -Infinity;
+    for (const [x, y] of pts!) {
+      if (x < minX) minX = x;
+      if (y < minY) minY = y;
+      if (x > maxX) maxX = x;
+      if (y > maxY) maxY = y;
+    }
+    if (!isFinite(minX)) minX = minY = maxX = maxY = 0;
+    bbox = { x: minX, y: minY, width: maxX - minX, height: maxY - minY };
+  }
+  return {
+    id: `traceRegion:${region.id}`,
+    kind: "traceRegion",
+    pickPriority: PICK.traceRegion,
+    bbox,
+    draw(ctx, bounds, state) {
+      const stroke = state.selected ? SELECT_COLOR : COLOR_TRACE_REGION;
+      const fill = state.selected ? SELECT_FILL : COLOR_TRACE_REGION_FILL;
+      ctx.lineWidth =
+        (state.selected ? SELECT_OUTLINE_PX : OUTLINE_WIDTH_PX + 0.5) / bounds.zoom;
+      ctx.fillStyle = fill;
+      ctx.strokeStyle = stroke;
+      if (pts && pts.length >= 2) {
+        ctx.beginPath();
+        ctx.moveTo(pts[0][0], pts[0][1]);
+        for (let i = 1; i < pts.length; i++) ctx.lineTo(pts[i][0], pts[i][1]);
+        ctx.closePath();
+        ctx.fill();
+        ctx.stroke();
+      } else {
+        ctx.fillRect(bbox.x, bbox.y, bbox.width, bbox.height);
+        ctx.strokeRect(bbox.x, bbox.y, bbox.width, bbox.height);
+      }
+    },
+    hitTest(p) {
+      if (pts) {
+        return pts.length >= 3 &&
+          pointInPolygon(p, pts.map(([x, y]) => ({ x, y })))
+          ? `traceRegion:${region.id}`
+          : null;
+      }
+      return p.x >= bbox.x &&
+        p.x <= bbox.x + bbox.width &&
+        p.y >= bbox.y &&
+        p.y <= bbox.y + bbox.height
+        ? `traceRegion:${region.id}`
+        : null;
+    }
+  };
+}
+
+/** Vectorize trace blockage — same styling family as the ML ignore rect
+ *  (red dashed border + faint fill) plus an X cross over the interior, so
+ *  "nothing gets vectorized in here" reads at a glance. */
+export function buildTraceBlockage(b: TraceBlockage): Annotation {
+  return {
+    id: `traceBlockage:${b.id}`,
+    kind: "traceBlockage",
+    pickPriority: PICK.traceBlockage,
+    bbox: { x: b.x, y: b.y, width: b.width, height: b.height },
+    draw(ctx, bounds, state) {
+      ctx.fillStyle = state.selected ? SELECT_FILL : COLOR_TRACE_BLOCKAGE_FILL;
+      ctx.strokeStyle = state.selected ? SELECT_COLOR : COLOR_TRACE_BLOCKAGE;
+      ctx.lineWidth = (state.selected ? SELECT_OUTLINE_PX : OUTLINE_WIDTH_PX) / bounds.zoom;
+      const dash = 4 / bounds.zoom;
+      ctx.setLineDash([dash, dash]);
+      ctx.fillRect(b.x, b.y, b.width, b.height);
+      ctx.strokeRect(b.x, b.y, b.width, b.height);
+      ctx.setLineDash([]);
+      // The X — what makes a blockage read as "crossed out, blocked".
+      const inset = Math.min(b.width, b.height) * 0.25;
+      ctx.beginPath();
+      ctx.moveTo(b.x + inset, b.y + inset);
+      ctx.lineTo(b.x + b.width - inset, b.y + b.height - inset);
+      ctx.moveTo(b.x + b.width - inset, b.y + inset);
+      ctx.lineTo(b.x + inset, b.y + b.height - inset);
+      ctx.stroke();
     }
   };
 }

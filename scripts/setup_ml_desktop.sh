@@ -139,7 +139,7 @@ echo "Install variant: $MODE"
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 echo "Installing base ML packages..."
-install_pkgs opencv-contrib-python-headless numpy scipy pillow tqdm fastapi "uvicorn[standard]" python-multipart
+install_pkgs opencv-contrib-python-headless numpy scipy scikit-image pillow tqdm fastapi "uvicorn[standard]" python-multipart
 
 install_torch_extras() {
     echo "Installing segmentation-models-pytorch + albumentations..."

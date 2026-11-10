@@ -51,7 +51,15 @@ if (-not $AppDir) {
     $AppDir = Join-Path $here "..\desktop\build\dist\win-unpacked"
   }
 }
-$AppDir = [System.IO.Path]::GetFullPath((Join-Path $PWD $AppDir))
+# $AppDir is absolute both in the in-bundle branch above and in the common
+# -AppDir case; only JOIN when it is relative (Join-Path silently builds
+# "F:\root\F:\path" out of an absolute child and GetFullPath then rejects
+# the format - the in-bundle default branch had never been exercised).
+if ([System.IO.Path]::IsPathRooted($AppDir)) {
+  $AppDir = [System.IO.Path]::GetFullPath($AppDir)
+} else {
+  $AppDir = [System.IO.Path]::GetFullPath((Join-Path $PWD $AppDir))
+}
 $mlDir = Join-Path $AppDir "resources\app\ml"
 
 if (-not (Test-Path (Join-Path $mlDir "sidecar.py"))) {
@@ -179,7 +187,7 @@ Write-Host "Install variant: $mode" -ForegroundColor Green
 # Non-torch packages (the non-torch subset of ml/requirements.txt) — installed
 # first so a torch-variant failure never blocks the base stack.
 Write-Host "Installing base ML packages..." -ForegroundColor Green
-Invoke-Install @("opencv-contrib-python-headless", "numpy", "scipy", "pillow", "tqdm", "fastapi", "uvicorn[standard]", "python-multipart")
+Invoke-Install @("opencv-contrib-python-headless", "numpy", "scipy", "scikit-image", "pillow", "tqdm", "fastapi", "uvicorn[standard]", "python-multipart")
 
 # segmentation-models-pytorch pins torch indirectly; install it after torch.
 function Install-TorchExtras {

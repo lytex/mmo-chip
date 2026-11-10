@@ -256,7 +256,7 @@ export async function exportProject(
   const deviceRegistry = localStorage.getItem("mmo-chip-device-registry");
   const analogNames = localStorage.getItem("mmo-chip-analog-names");
   const transfer = useProjectTransfer.getState();
-  transfer.start("export", "Подготовка ZIP-архива…");
+  transfer.start("export", "Preparing ZIP archive…");
 
   return new Promise<ExportProjectResult>((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -269,7 +269,7 @@ export async function exportProject(
     signal?.addEventListener("abort", abort, { once: true });
     request.onprogress = (event) => {
       transfer.update({
-        phase: "Скачивание ZIP-архива…",
+        phase: "Downloading ZIP archive…",
         loaded: event.loaded,
         total: event.lengthComputable ? event.total : null
       });
@@ -281,7 +281,7 @@ export async function exportProject(
     };
     request.onabort = () => {
       const error = new DOMException("Export cancelled", "AbortError");
-      transfer.fail("Экспорт отменён");
+      transfer.fail("Export cancelled");
       reject(error);
     };
     request.onload = () => {
@@ -294,7 +294,7 @@ export async function exportProject(
         reject(error);
         return;
       }
-      transfer.complete("ZIP-архив готов");
+      transfer.complete("ZIP archive ready");
       resolve({
         blob: request.response,
         filename: request.getResponseHeader("X-Filename") || `mmochip-${dieId}.zip`
@@ -333,7 +333,7 @@ export async function importProject(
   let url = "/api/dies/import-project" + (query ? `?${query}` : "");
 
   const transfer = useProjectTransfer.getState();
-  transfer.start("import", "Загрузка ZIP-архива…", file.size);
+  transfer.start("import", "Uploading ZIP archive…", file.size);
 
   return new Promise<ImportProjectResult>((resolve, reject) => {
     const request = new XMLHttpRequest();
@@ -342,7 +342,7 @@ export async function importProject(
 
     request.upload.onprogress = (event) => {
       transfer.update({
-        phase: "Загрузка ZIP-архива…",
+        phase: "Uploading ZIP archive…",
         loaded: event.loaded,
         total: event.lengthComputable ? event.total : file.size
       });
@@ -351,7 +351,7 @@ export async function importProject(
       // The server now validates and extracts the archive sequentially. Its duration depends on
       // disk speed and image count, so keep the lower-bar indicator indeterminate instead of
       // displaying a misleading completed percentage while this work is still in progress.
-      transfer.update({ phase: "Проверка и распаковка архива на сервере…", loaded: 0, total: null });
+      transfer.update({ phase: "Verifying and unpacking the archive on the server…", loaded: 0, total: null });
     };
     request.onerror = () => {
       const error = new Error("Import failed: network error");
@@ -360,7 +360,7 @@ export async function importProject(
     };
     request.onabort = () => {
       const error = new DOMException("Import cancelled", "AbortError");
-      transfer.fail("Импорт отменён");
+      transfer.fail("Import cancelled");
       reject(error);
     };
     request.onload = () => {
@@ -372,7 +372,7 @@ export async function importProject(
       }
       try {
         const result = JSON.parse(request.responseText) as ImportProjectResult;
-        transfer.complete("Импорт завершён");
+        transfer.complete("Import finished");
         resolve(result);
       } catch {
         const error = new Error("Import failed: invalid server response");

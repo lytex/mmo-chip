@@ -19,6 +19,7 @@
     "multer": "^2.0.1",
     "shared": "*",
     "sharp": "^0.34.2",
+    "undici": "^7.12.0",
     "ws": "^8.18.0"
   },
   "devDependencies": {
@@ -34,4 +35,3 @@
     "typescript": "^5.8.3"
   }
 }
-

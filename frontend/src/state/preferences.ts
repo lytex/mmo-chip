@@ -7,8 +7,10 @@ import type {
   AssistantClarificationMode,
   AssistantDataFlags,
   AssistantLlmConfig,
-  LayerType
+  LayerType,
+  VectorizeParams
 } from "shared";
+import { NEUTRAL_VECTOR_PREPROCESS } from "shared";
 import {
   CELL_COLOR,
   NET_COLOR,
@@ -163,6 +165,10 @@ interface PreferencesState {
    *  fetched per tile). One global toggle — the user usually wants to flip
    *  it the same way across dies. */
   mlResultsHidden: boolean;
+  /** Die-viewer: hide the ML trace overlay (v1 contour polylines of the
+   *  model's trace channel). Separate from `mlResultsHidden` so the
+   *  experimental trace decode can be toggled without hiding the vias. */
+  mlTracesHidden: boolean;
   /** Wire / multi-wire: snap the click position to the nearest via (ML or
    *  manually placed) when within tolerance. Helps stitch nets onto via
    *  centres without eyeballing. */
@@ -187,6 +193,56 @@ interface PreferencesState {
    *  Inference caches every detection with its score; this slider filters
    *  the cached results client-side — no re-inference on change. */
   viaConfidenceThreshold: number;
+  /** Minimum mean probability inside the contour (0..1) for an ML trace
+   *  polyline to be drawn — the trace-noise filter. Scored traces come from
+   *  the sidecar decode; caches written before scoring keep no score and are
+   *  always shown. */
+  traceConfidenceThreshold: number;
+  /** Live parameters of the classical (no-model) metal vectorize overlay.
+   *  Kept in preferences so the tuning survives reloads; presets below
+   *  capture named snapshots per image kind (SEM / optic / die). */
+  vectorParams: VectorizeParams;
+  /** Named vectorize param snapshots ("LM2937 SEM", "optic gold", …). */
+  vectorPresets: Record<string, VectorizeParams>;
+  /** Die-viewer: hide the vectorize overlay entirely (traces + outlines). */
+  vectorOverlayHidden: boolean;
+  /** Die-viewer: show the committed vectorize trace regions / blockages
+   *  drawn on the die. OFF by default (a fresh load starts uncluttered);
+   *  persisted so the choice survives reloads. */
+  traceShapesVisible: boolean;
+  /** Per-saved-vector-layer visibility. Absent or true = HIDDEN (a fresh
+   *  page load starts with every Vector layer's eye off — whole-die rasters
+   *  are heavy and rarely what you want on open); an explicit `false` means
+   *  the user turned that layer on and it survives reloads. */
+  vectorLayerHidden: Record<string, boolean>;
+  /** Per-saved-vector-layer colour (hex). Absent = the default amber. */
+  vectorLayerColors: Record<string, string>;
+  /** Vector OUTLINE opacity (0..1) — the amber "what did the threshold
+   *  capture" metal contours. Traces (centrelines) keep their own fixed
+   *  style. 1 = fully opaque (a solid silhouette of the captured metal);
+   *  default 0.3 ≈ the old soft look, a bit stronger. */
+  vectorOutlineAlpha: number;
+  /** Materialization filter: a net must touch at least this many DISTINCT
+   *  device contacts to be created. 0 = off; 2 drops floating artifacts. */
+  vectorMinContacts: 0 | 1 | 2;
+  /** P2-3: blit the PREPROCESSED viewport crop under the vector overlay.
+   *  Persisted so it survives page reloads / app restarts — a transient
+   *  flag used to silently switch OFF on every reload (the checkbox sits
+   *  inside the collapsed Preprocess section, so nothing hinted it). */
+  vectorPreprocessPreview: boolean;
+  /** Materialization filter: skip octilinear traces kept raw with
+   *  `irregular: true` instead of materializing non-octilinear geometry. */
+  vectorDropIrregular: boolean;
+  /** Materialization filter: skip vectorized traces that duplicate (cross
+   *  or lie inside the buffer of) hand-drawn annotation nets — the decoder
+   *  re-detects wires the user already drew, materializing both makes
+   *  duplicates. Off = materialize everything raw-vectorized. */
+  vectorRespectUserNets: boolean;
+  /** Max length (source px) of a contact→wire branch edge (0 = off). Caps
+   *  the outline-membership connections: without it a contact inside a big
+   *  pad whose centreline was width-filtered away ties to a far wire with
+   *  a long straight line. */
+  vectorMaxBranchLen: number;
   /** Minimum score (0..1) for an ML cell proposal to be shown / offered in
    *  merge-cells. Separate from the via threshold so the two overlays can be
    *  tuned independently. */
@@ -276,6 +332,8 @@ interface PreferencesState {
   pinNamesVisible: boolean;
   /** Die viewer: show the analog devices overlay (extracted instances + highlights). */
   deviceOverlayOn: boolean;
+  /** Die viewer: FPS/render-ms HUD strip in the canvas corner (diagnostics). */
+  perfHudOn: boolean;
   /** Die viewer: render net IDs next to terminals/wires instead of just net colors. */
   showTermNetIds: boolean;
   /** Die viewer: render the floorplan regions overlay. */
@@ -413,6 +471,8 @@ interface PreferencesActions {
   setPinNamesVisible: (visible: boolean) => void;
   /** Toggle analog devices overlay on the die viewer canvas. */
   setDeviceOverlayOn: (visible: boolean) => void;
+  /** Toggle the FPS/render diagnostic HUD on the die viewer canvas. */
+  setPerfHudOn: (visible: boolean) => void;
   /** Toggle net ID overlay on the die viewer canvas. */
   setShowTermNetIds: (visible: boolean) => void;
   /** Toggle floorplan overlay on the die viewer canvas. */
@@ -477,11 +537,30 @@ interface PreferencesActions {
    */
   soloReLayerSelectable: (key: string, allKeys: ReadonlyArray<string>) => void;
   setMlResultsHidden: (hidden: boolean) => void;
+  setMlTracesHidden: (hidden: boolean) => void;
   setSnapToVias: (snap: boolean) => void;
   setWireAutoEndOnVia: (enabled: boolean) => void;
   setAutoEndOnContact: (enabled: boolean) => void;
   setViaSize: (size: number) => void;
   setViaConfidenceThreshold: (threshold: number) => void;
+  setTraceConfidenceThreshold: (threshold: number) => void;
+  /** Merge a patch into the live vectorize params (shallow). */
+  patchVectorParams: (patch: Partial<VectorizeParams>) => void;
+  /** Reset vectorize params to the shipped defaults. */
+  resetVectorParams: () => void;
+  /** Persist a named vectorize params snapshot. */
+  saveVectorPreset: (name: string, params: VectorizeParams) => void;
+  deleteVectorPreset: (name: string) => void;
+  setVectorOverlayHidden: (hidden: boolean) => void;
+  setTraceShapesVisible: (visible: boolean) => void;
+  setVectorOutlineAlpha: (a: number) => void;
+  setVectorLayerVisible: (hash: string, visible: boolean) => void;
+  setVectorLayerColor: (hash: string, color: string) => void;
+  setVectorMinContacts: (n: 0 | 1 | 2) => void;
+  setVectorPreprocessPreview: (on: boolean) => void;
+  setVectorDropIrregular: (drop: boolean) => void;
+  setVectorRespectUserNets: (respect: boolean) => void;
+  setVectorMaxBranchLen: (px: number) => void;
   setCellDetectionThreshold: (threshold: number) => void;
   setCellDetectionsHidden: (hidden: boolean) => void;
   setCellDetectAllowFlipX: (allow: boolean) => void;
@@ -529,6 +608,29 @@ interface PreferencesActions {
 
 const DEFAULT_EXPANDED_SECTIONS: AnnotationKind[] = ["net", "via", "roi"];
 
+/** Defaults for the classical vectorize overlay: a mid brightness band that
+ *  suits bright-metal-on-dark SEM crops — the user tunes from here. widthMax
+ *  starts at 30 px: without an upper bound fat blobs (pads, text, charging
+ *  halos) explode the trace count into noise. */
+export const DEFAULT_VECTOR_PARAMS: VectorizeParams = {
+  channel: "gray",
+  invert: false,
+  threshLow: 120,
+  threshHigh: 255,
+  adaptive: false,
+  adaptiveBlock: 51,
+  adaptiveC: 8,
+  openPx: 1,
+  bridgePx: 2,
+  minLength: 14,
+  widthMin: 1.5,
+  widthMax: 30,
+  decoder: "runs",
+  octDeltaPx: 0,
+  octStrict: false,
+  preprocess: { ...NEUTRAL_VECTOR_PREPROCESS }
+};
+
 export const usePreferences = create<PreferencesState & PreferencesActions>()(
   subscribeWithSelector(
     persist(
@@ -572,12 +674,26 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           collector: false, bulk: false,
         },
         mlResultsHidden: true,
+        mlTracesHidden: false,
         snapToVias: false,
         wireAutoEndOnVia: false,
         autoEndOnContact: true,
         viaColor: VIA_DEFAULT_COLOR,
         viaSize: VIA_DEFAULT_SIZE,
         viaConfidenceThreshold: 0.5,
+        traceConfidenceThreshold: 0,
+        vectorParams: { ...DEFAULT_VECTOR_PARAMS },
+        vectorPresets: {},
+        vectorOverlayHidden: true,
+        traceShapesVisible: false,
+        vectorOutlineAlpha: 0.3,
+        vectorLayerHidden: {},
+        vectorLayerColors: {},
+        vectorMinContacts: 0,
+        vectorPreprocessPreview: false,
+        vectorDropIrregular: false,
+        vectorRespectUserNets: true,
+        vectorMaxBranchLen: 0,
         cellDetectionThreshold: 0.5,
         cellDetectionsHidden: false,
         cellDetectAllowFlipX: true,
@@ -605,6 +721,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         viaLabelsVisible: true,
         pinNamesVisible: true,
         deviceOverlayOn: true,
+        perfHudOn: false,
         showTermNetIds: false,
         floorplanOverlayOn: true,
         showFloorplanIO: false,
@@ -664,6 +781,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
         setViaLabelsVisible: (visible) => set({ viaLabelsVisible: visible }),
         setPinNamesVisible: (visible) => set({ pinNamesVisible: visible }),
         setDeviceOverlayOn: (visible) => set({ deviceOverlayOn: visible }),
+        setPerfHudOn: (visible) => set({ perfHudOn: visible }),
         setShowTermNetIds: (visible) => set({ showTermNetIds: visible }),
         setFloorplanOverlayOn: (visible) => set({ floorplanOverlayOn: visible }),
         setShowFloorplanIO: (visible) => set({ showFloorplanIO: visible }),
@@ -887,6 +1005,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
             return { reLayerSelectable: next };
           }),
         setMlResultsHidden: (hidden) => set({ mlResultsHidden: hidden }),
+        setMlTracesHidden: (hidden) => set({ mlTracesHidden: hidden }),
         setSnapToVias: (snap) => set({ snapToVias: snap }),
         setWireAutoEndOnVia: (enabled) => set({ wireAutoEndOnVia: enabled }),
         setAutoEndOnContact: (enabled) => set({ autoEndOnContact: enabled }),
@@ -895,6 +1014,41 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           set({
             viaConfidenceThreshold: Math.min(1, Math.max(0, threshold))
           }),
+        setTraceConfidenceThreshold: (threshold) =>
+          set({
+            traceConfidenceThreshold: Math.min(1, Math.max(0, threshold))
+          }),
+        patchVectorParams: (patch) =>
+          set((state) => ({ vectorParams: { ...state.vectorParams, ...patch } })),
+        resetVectorParams: () => set({ vectorParams: { ...DEFAULT_VECTOR_PARAMS } }),
+        saveVectorPreset: (name, params) =>
+          set((state) => ({
+            vectorPresets: { ...state.vectorPresets, [name]: { ...params } }
+          })),
+        deleteVectorPreset: (name) =>
+          set((state) => {
+            if (!(name in state.vectorPresets)) return state;
+            const next = { ...state.vectorPresets };
+            delete next[name];
+            return { vectorPresets: next };
+          }),
+        setVectorOverlayHidden: (hidden) => set({ vectorOverlayHidden: hidden }),
+        setTraceShapesVisible: (visible) => set({ traceShapesVisible: visible }),
+  setVectorOutlineAlpha: (a) => set({ vectorOutlineAlpha: Math.min(1, Math.max(0, a)) }),
+  setVectorLayerVisible: (hash, visible) =>
+    set((state) => ({
+      // Absent = hidden (the default), so only explicit values are stored.
+      vectorLayerHidden: { ...state.vectorLayerHidden, [hash]: !visible }
+    })),
+  setVectorLayerColor: (hash, color) =>
+    set((state) => ({
+      vectorLayerColors: { ...state.vectorLayerColors, [hash]: color }
+    })),
+        setVectorMinContacts: (n) => set({ vectorMinContacts: n }),
+        setVectorPreprocessPreview: (on) => set({ vectorPreprocessPreview: on }),
+        setVectorDropIrregular: (drop) => set({ vectorDropIrregular: drop }),
+        setVectorRespectUserNets: (respect) => set({ vectorRespectUserNets: respect }),
+        setVectorMaxBranchLen: (px) => set({ vectorMaxBranchLen: Math.max(0, px) }),
         setCellDetectionThreshold: (threshold) =>
           set({
             cellDetectionThreshold: Math.min(1, Math.max(0, threshold))
@@ -1019,12 +1173,26 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           rulerVisibilityOverrides: state.rulerVisibilityOverrides,
           customNetColorsEnabled: state.customNetColorsEnabled,
           mlResultsHidden: state.mlResultsHidden,
+          mlTracesHidden: state.mlTracesHidden,
           snapToVias: state.snapToVias,
           wireAutoEndOnVia: state.wireAutoEndOnVia,
           autoEndOnContact: state.autoEndOnContact,
           viaColor: state.viaColor,
           viaSize: state.viaSize,
           viaConfidenceThreshold: state.viaConfidenceThreshold,
+          traceConfidenceThreshold: state.traceConfidenceThreshold,
+          vectorParams: state.vectorParams,
+          vectorPresets: state.vectorPresets,
+          vectorOverlayHidden: state.vectorOverlayHidden,
+          traceShapesVisible: state.traceShapesVisible,
+          vectorOutlineAlpha: state.vectorOutlineAlpha,
+          vectorLayerHidden: state.vectorLayerHidden,
+          vectorLayerColors: state.vectorLayerColors,
+          vectorMinContacts: state.vectorMinContacts,
+          vectorPreprocessPreview: state.vectorPreprocessPreview,
+          vectorDropIrregular: state.vectorDropIrregular,
+          vectorRespectUserNets: state.vectorRespectUserNets,
+          vectorMaxBranchLen: state.vectorMaxBranchLen,
           cellDetectionThreshold: state.cellDetectionThreshold,
           cellDetectionsHidden: state.cellDetectionsHidden,
           cellDetectAllowFlipX: state.cellDetectAllowFlipX,
@@ -1048,6 +1216,7 @@ export const usePreferences = create<PreferencesState & PreferencesActions>()(
           viaLabelsVisible: state.viaLabelsVisible,
           pinNamesVisible: state.pinNamesVisible,
           deviceOverlayOn: state.deviceOverlayOn,
+          perfHudOn: state.perfHudOn,
           showTermNetIds: state.showTermNetIds,
           floorplanOverlayOn: state.floorplanOverlayOn,
           showFloorplanIO: state.showFloorplanIO,

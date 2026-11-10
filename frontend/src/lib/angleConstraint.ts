@@ -18,7 +18,7 @@ import type { Point } from "./geometry";
 export type AngleMode = "free" | "ortho" | "h" | "v" | "diag";
 
 /** Tools that place points under an angle mode. The bus shares "wire". */
-export type AngleTool = "measure" | "wire" | "floorplan" | "viaPoly";
+export type AngleTool = "measure" | "wire" | "floorplan" | "viaPoly" | "traceRegionPoly";
 
 export const ANGLE_MODES: { mode: AngleMode; label: string }[] = [
   { mode: "free", label: "free" },
@@ -33,7 +33,8 @@ export const DEFAULT_ANGLE_MODES: Record<AngleTool, AngleMode> = {
   measure: "ortho",
   wire: "diag",
   floorplan: "free",
-  viaPoly: "free"
+  viaPoly: "free",
+  traceRegionPoly: "free"
 };
 
 export const isAngleMode = (v: unknown): v is AngleMode =>

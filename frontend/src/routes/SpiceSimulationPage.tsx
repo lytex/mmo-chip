@@ -685,6 +685,8 @@ function SpiceSimulator({ dieId }: { dieId: string }) {
         onClose={() => setSettingsOpen(false)}
         deviceOverlayOn={false}
         setDeviceOverlayOn={() => {}}
+        perfHudOn={false}
+        setPerfHudOn={() => {}}
         cellsLocked={false}
         setCellsLocked={() => {}}
         showTermNetIds={false}

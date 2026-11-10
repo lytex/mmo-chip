@@ -547,12 +547,15 @@ export async function runInteractiveLayout(
   return gridFallback(devices, namedNets, table, opts);
 }
 
-async function elkInteractiveLayout(
+/** Build (but do not run) the ELK graph for the interactive layout.
+ *  Used by `elkInteractiveLayout`; exported so debug tooling can inspect
+ *  exactly which graph ELK chokes on. */
+export function buildInteractiveElkGraph(
   devices: AnalogDevice[],
   namedNets: Map<number, string>,
   table: SymbolTable,
   opts: AnalogLayoutOptions,
-): Promise<InteractiveLayoutResult> {
+): { graph: ElkGraphJson; edgeNetId: Map<string, number>; sizes: Record<string, { w: number; h: number }> } {
   const powers = powerDevices(devices, namedNets, opts);
   const ioNets = ioNetList(devices, namedNets, opts);
   const blocks = opts.blocks ?? [];
@@ -869,7 +872,73 @@ async function elkInteractiveLayout(
     edges,
   };
 
+  return { graph, edgeNetId, sizes };
+}
+
+type ElkGraphJson = {
+  id: string;
+  layoutOptions: Record<string, string>;
+
+  children: Array<{
+    id: string;
+    width: number;
+    height: number;
+    ports: Array<{ id: string; x: number; y: number; width: number; height: number; layoutOptions: Record<string, string> }>;
+    layoutOptions: Record<string, string>;
+  }>;
+  edges: Array<{ id: string; sources: string[]; targets: string[] }>;
+};
+
+/** True when every coordinate ELK produced is finite: child x/y,
+ *  edge section start/bend/end points and the graph bbox. Exported for
+ *  regression tests — this is the seam that catches ELK's silent
+ *  scanline-compaction garbage before it reaches the canvas/router. */
+export function elkResultIsSane(result: unknown): boolean {
+  const r = result as {
+    width?: number; height?: number;
+    children?: Array<{ x?: number; y?: number }>;
+    edges?: Array<{ sections?: Array<{ startPoint: Point; endPoint: Point; bendPoints?: Point[] }> }>;
+  };
+  const finite = (n: unknown): boolean => typeof n === "number" && Number.isFinite(n);
+  if (!finite(r.width) || !finite(r.height)) return false;
+  for (const c of r.children ?? []) {
+    if (!finite(c.x) || !finite(c.y)) return false;
+  }
+  for (const e of r.edges ?? []) {
+    for (const sec of e.sections ?? []) {
+      if (!finite(sec.startPoint.x) || !finite(sec.startPoint.y)) return false;
+      if (!finite(sec.endPoint.x) || !finite(sec.endPoint.y)) return false;
+      for (const b of sec.bendPoints ?? []) {
+        if (!finite(b.x) || !finite(b.y)) return false;
+      }
+    }
+  }
+  return true;
+}
+
+async function elkInteractiveLayout(
+  devices: AnalogDevice[],
+  namedNets: Map<number, string>,
+  table: SymbolTable,
+  opts: AnalogLayoutOptions,
+): Promise<InteractiveLayoutResult> {
+  const built = buildInteractiveElkGraph(devices, namedNets, table, opts);
+  const { graph, edgeNetId } = built;
+  const sizes = built.sizes;
+
   const result = await elk.layout(graph);
+
+  // ELK's GWT backend has a scanline-compaction bug ("Invalid hitboxes for
+  // scanline constraint calculation") that usually throws — but on some
+  // graph shapes (observed: interactive hierarchy blocks, compaction 1-2)
+  // it instead SILENTLY returns non-finite geometry: node.y = Infinity,
+  // edge bendPoints = Infinity, result.height = Infinity. Rendering that
+  // garbage isn't just cosmetically broken — a later local drag-time
+  // re-route would rasterize an INF-length segment with a unit-step loop
+  // and hang the tab forever. So validate and degrade like a thrown error.
+  if (!elkResultIsSane(result)) {
+    throw new Error("ELK returned non-finite layout geometry (scanline compaction bug) — degrading");
+  }
 
   const positions: Record<string, Point> = {};
   for (const child of result.children ?? []) {
@@ -1235,6 +1304,7 @@ export class WireGrid {
   /** Mark a 3x3 block of cells around each point along the segment. */
   private rasterize(a: Point, b: Point) {
     const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (!isFinite(dist)) return; // non-finite segment — nothing to mark
     if (dist < 0.001) {
       this.markCellBlock(a.x, a.y);
       return;
@@ -1260,6 +1330,7 @@ export class WireGrid {
    *  existing wire. 0 when clear. */
   proximityLength(a: Point, b: Point): number {
     const dist = Math.abs(b.x - a.x) + Math.abs(b.y - a.y);
+    if (!isFinite(dist)) return 0; // non-finite segment — treat as clear
     if (dist < 0.001) return 0;
     const steps = Math.max(1, Math.ceil(dist / (this.cellSize / 2)));
     let occupied = 0;
