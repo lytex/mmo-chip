@@ -322,6 +322,53 @@ test("full edits: any section, human items, one undo step per batch", async () =
   assert.deepEqual(ann.comments.map((c: { id: string }) => c.id), ["human"]);
 });
 
+test("RE cell tools read, render, extract and edit a cell type", async () => {
+  const { app, dieId } = await createHarness();
+  const type = { id: "t1", name: "INV", cropRect: { x: 10, y: 10, width: 60, height: 40 }, layers: { metal1: [{ id: "m", kind: "rect", x: 5, y: 5, width: 20, height: 4 }] } };
+  const names = (await rpc(app, "tools/list", {})).result.tools.map((t: { name: string }) => t.name);
+  for (const n of ["list_cell_types", "get_cell_type", "get_cell_image", "get_cell_extraction", "edit_cell_layers", "edit_cell_type"]) {
+    assert.ok(names.includes(n), n);
+  }
+
+  // Needs the die's full-edit switch to create the type, like edit_annotations.
+  assert.equal((await call(app, dieId, "edit_cell_type", { action: "create", name: "X", cropRect: type.cropRect })).isError, true);
+  await request(app).put(`/api/dies/${dieId}/mcp/settings`).send({ full: true }).expect(200);
+  const created = ok(await call(app, dieId, "edit_cell_type", { action: "create", cellTypeId: "t1", name: "INV", cropRect: type.cropRect }));
+  assert.equal(created.cellTypeId, "t1");
+
+  const edited = ok(await call(app, dieId, "edit_cell_layers", {
+    cellTypeId: "t1",
+    operations: [
+      { op: "upsert", layer: "metal1", shape: type.layers.metal1[0] },
+      { op: "upsert", layer: "diffusion", shape: { id: "d", kind: "rect", x: 2, y: 12, width: 30, height: 10 } },
+      { op: "patch", layer: "metal1", shapeId: "m", label: "vcc" },
+      { op: "move", layer: "diffusion", shapeId: "d", layer2: "nwell" }
+    ]
+  }));
+  assert.deepEqual(edited.shapes, { metal1: 1, nwell: 1 });
+  assert.equal((await call(app, dieId, "edit_cell_layers", { cellTypeId: "t1", operations: [{ op: "upsert", layer: "metal1", shape: { kind: "rect", x: 1 } }] })).isError, true);
+  assert.equal((await call(app, dieId, "edit_cell_layers", { cellTypeId: "nope", operations: [{ op: "delete", layer: "metal1", shapeId: "m" }] })).isError, true);
+
+  const listed = ok(await call(app, dieId, "list_cell_types", {}));
+  assert.equal(listed.cellTypes[0].shapes.metal1, 1);
+  const got = ok(await call(app, dieId, "get_cell_type", { cellTypeId: "t1", layers: ["metal1"] }));
+  assert.equal(got.layers.metal1[0].label, "vcc");
+  assert.equal(got.layers.nwell, undefined);
+
+  const image = await call(app, dieId, "get_cell_image", { cellTypeId: "t1", drawAllLayers: true, labelShapes: true, maxSize: 128 });
+  assert.equal(image.isError, undefined, image.content[0]?.text);
+  assert.equal(image.content[0].type, "image");
+
+  const extraction = await call(app, dieId, "get_cell_extraction", { cellTypeId: "t1" });
+  assert.equal(extraction.isError, undefined, extraction.content[0]?.text);
+  assert.equal(JSON.parse(extraction.content[0].text).cellType.id, "t1");
+
+  // One undo step per edit call.
+  await request(app).post(`/api/dies/${dieId}/mcp/undo`).expect(200);
+  const after = ok(await call(app, dieId, "get_cell_type", { cellTypeId: "t1" }));
+  assert.deepEqual(after.layers, {});
+});
+
 test("renders annotated images and attaches them to comments", async () => {
   const { app, dieId } = await createHarness();
   await request(app)

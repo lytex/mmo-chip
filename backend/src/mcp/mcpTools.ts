@@ -16,6 +16,7 @@ import { parseRenderSpec, renderAnnotated, renderSpecSchemaProperties } from "./
 import { saveCommentImage } from "./commentImages.js";
 import { FULL_EDIT_TOOLS } from "./mcpFullEdit.js";
 import { EXTENDED_TOOLS } from "./mcpExtended.js";
+import { CELL_TOOLS } from "./mcpCells.js";
 import {
   findItem,
   MCP_AUTHOR_ID,
@@ -947,7 +948,8 @@ const TOOLS: ToolDef[] = [
   deleteRuler,
   ...WIRE_TOOLS,
   ...FULL_EDIT_TOOLS,
-  ...EXTENDED_TOOLS
+  ...EXTENDED_TOOLS,
+  ...CELL_TOOLS
 ];
 
 export function listMcpTools() {
