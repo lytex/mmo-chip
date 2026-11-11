@@ -57,8 +57,9 @@ export interface RailSymbolData {
 
 export interface JunctionSymbolData {
   kind: "junction";
-  /** The net all wires meeting at this junction belong to. */
-  netId: number;
+  /** The net all wires meeting at this junction belong to. Absent for a
+   *  plain annotation (e.g. a "×N" finger count next to a transistor). */
+  netId?: number;
   label?: string;
 }
 

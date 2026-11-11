@@ -61,7 +61,9 @@ const elk: ElkLike = new (ELK as unknown as { new (): ElkLike })();
  *  appropriate `HoverEntity` on cursor enter / leave. */
 export type NodeMeta =
   | { kind: "gate"; domainId: string; gate: GateMatch }
-  | { kind: "tg"; tgId: string }
+  /** `fingers` > 1 when several parallel TGs (same bridged nets, same
+   *  controls — a multi-finger switch) were folded into this one node. */
+  | { kind: "tg"; tgId: string; fingers?: number }
   | { kind: "pass"; transistorId: string; transistorType: "pmos" | "nmos" }
   | { kind: "cell-input"; netId: number; label: string }
   | { kind: "cell-output"; netId: number; label: string }
@@ -430,8 +432,27 @@ export async function layoutNetlist(
   ): void => {
     const rendered = renderTGSymbol();
     const nodeId = `tg:${tg.id}`;
-    svgBodyById.set(nodeId, rendered.svg);
-    metaById.set(nodeId, { kind: "tg", tgId: tg.id });
+    const fingers = tgFingers.get(tg.id) ?? 1;
+    svgBodyById.set(
+      nodeId,
+      fingers > 1 ? (
+        <>
+          {rendered.svg}
+          <text
+            x={rendered.width + 2}
+            y={7}
+            fontFamily="var(--mono, ui-monospace)"
+            fontSize={8}
+            fill="var(--ink3)"
+          >
+            ×{fingers}
+          </text>
+        </>
+      ) : (
+        rendered.svg
+      ),
+    );
+    metaById.set(nodeId, { kind: "tg", tgId: tg.id, fingers });
 
     // rendered.inputs order: [ctrl_p, signal_a, ctrl_n]; output = signal_b.
     const ctrlpPort = `${nodeId}:ctrlp`;
@@ -612,7 +633,31 @@ export async function layoutNetlist(
   // Iterate until no more TGs can be decided, then fall back to the
   // sorted-id convention for any leftovers. The remaining
   // truly-orphan nets get caught by the orphan-input loop below.
-  const pendingTGs = extraction.transmissionGates.slice();
+  //
+  // Parallel fingers first: a wide switch is drawn as many P+N pairs
+  // that all bridge the same two nets under the same two controls. One
+  // symbol (tagged ×N) says the same thing as N stacked ones.
+  const tgFingers = new Map<string, number>();
+  const pendingTGs: Array<(typeof extraction.transmissionGates)[number]> = [];
+  {
+    const firstByKey = new Map<string, string>();
+    for (const tg of extraction.transmissionGates) {
+      const key = [
+        tg.bridgedNetIds[0],
+        tg.bridgedNetIds[1],
+        tg.controlPmosGateNetId,
+        tg.controlNmosGateNetId,
+      ].join("|");
+      const first = firstByKey.get(key);
+      if (first == null) {
+        firstByKey.set(key, tg.id);
+        tgFingers.set(tg.id, 1);
+        pendingTGs.push(tg);
+      } else {
+        tgFingers.set(first, (tgFingers.get(first) ?? 1) + 1);
+      }
+    }
+  }
   let tgProgress = true;
   while (tgProgress) {
     tgProgress = false;
@@ -655,8 +700,12 @@ export async function layoutNetlist(
   //
   // Runs AFTER all the explicit-driver loops (domains, TGs, passes,
   // cell-inputs, rails) so it only catches what slipped through.
+  const roleByNet = new Map(extraction.nets.map((n) => [n.id, n.role]));
   for (const [netId] of consumerPorts) {
     if (drivers.has(netId)) continue;
+    // A net the user labelled `io` is a known cell terminal, not an
+    // annotation gap — give it a regular pin instead of the amber one.
+    const isIo = roleByNet.get(netId) === "io";
     const nodeId = `orphan-in:${netId}`;
     const portId = `${nodeId}:out`;
     elkChildren.push({
@@ -678,7 +727,46 @@ export async function layoutNetlist(
     });
     addDriver(netId, portId);
     metaById.set(nodeId, {
-      kind: "orphan-input",
+      kind: isIo ? "cell-input" : "orphan-input",
+      netId,
+      label: netName(netId),
+    });
+  }
+
+  // ── 3f. Driven-but-unconsumed switch / gate outputs ──────────
+  //
+  // The mirror image of 3e: a net a TG, pass transistor or gate drives
+  // but nothing in the cell consumes and that isn't a classified
+  // `output` (so it has no boundary pin yet). That's the far terminal
+  // of a pass-gate-only cell — e.g. a bare transmission gate between
+  // two `io` nets. Without a pin the symbol's output would end in mid
+  // air.
+  for (const [netId, sources] of drivers) {
+    if (consumerPorts.has(netId)) continue;
+    if (!sources.some((p) => /^(tg|pass|gate):/.test(p))) continue;
+    const nodeId = `cell-out:${netId}`;
+    if (metaById.has(nodeId)) continue;
+    const portId = `${nodeId}:in`;
+    elkChildren.push({
+      id: nodeId,
+      width: IO_PIN_W,
+      height: IO_PIN_H,
+      ports: [{
+        id: portId,
+        x: 0,
+        y: IO_PIN_H / 2,
+        width: 0,
+        height: 0,
+        layoutOptions: { "port.side": "WEST" },
+      }],
+      layoutOptions: {
+        "portConstraints": "FIXED_POS",
+        "layered.layering.layerConstraint": "LAST",
+      },
+    });
+    addConsumer(netId, portId);
+    metaById.set(nodeId, {
+      kind: "cell-output",
       netId,
       label: netName(netId),
     });

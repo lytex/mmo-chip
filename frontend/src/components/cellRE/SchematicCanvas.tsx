@@ -15,7 +15,9 @@ import type {
   Transistor,
 } from "../../lib/extraction";
 import {
+  hasPassNetwork,
   renderDomain,
+  renderPassNetwork,
   type GateInput,
   type PlacedSymbol,
   type Point,
@@ -112,9 +114,15 @@ export function SchematicCanvas({
   // Recompute the schematic whenever inputs change. `renderDomain` is pure
   // — it'll happily re-run on every prop tick — but it's still O(N²) in
   // transistor count via the SP-decompose so we memo on identity.
+  //
+  // No domain to show (none selected / the cell has none) but the cell
+  // has transmission gates or pass transistors → draw those instead. A
+  // pass-gate-only cell (analog switch) never has a rail-anchored
+  // domain, and would otherwise have no transistor-level view at all.
   const result = useMemo(() => {
-    if (!domain) return null;
-    return renderDomain(domain, transistors, nets);
+    if (domain) return renderDomain(domain, transistors, nets);
+    if (hasPassNetwork(transistors)) return renderPassNetwork(transistors, nets);
+    return null;
   }, [domain, transistors, nets]);
 
   // Cheap O(1) predicates over the typed hover target. Each schematic
@@ -174,7 +182,7 @@ export function SchematicCanvas({
   // element after a transition never gets the wheel / gesture
   // listeners and pan + zoom break silently. Keying on the boolean
   // makes the subscription follow the mounted element.
-  const showSvg = !!(domain && result && result.ok);
+  const showSvg = !!(result && result.ok);
   useEffect(() => {
     if (!showSvg) return;
     const svg = svgRef.current;
@@ -235,13 +243,12 @@ export function SchematicCanvas({
 
   // ── Render ────────────────────────────────────────────────────
 
-  if (!domain) {
-    return (
-      <Placeholder host={hostRef}>select a domain on the right to view its schematic</Placeholder>
-    );
-  }
   if (!result) {
-    return <Placeholder host={hostRef}>loading…</Placeholder>;
+    return (
+      <Placeholder host={hostRef}>
+        {domain ? "loading…" : "select a domain on the right to view its schematic"}
+      </Placeholder>
+    );
   }
   if (!result.ok) {
     return (

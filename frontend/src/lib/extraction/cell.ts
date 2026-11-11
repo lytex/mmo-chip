@@ -1344,6 +1344,11 @@ function inferDiffusionTypes(
       });
       continue;
     }
+    // A diffusion no gate crosses (never split → a single sub-region)
+    // can't be a transistor source/drain. Sitting on the "wrong" rail
+    // it's a well / substrate tap (N+ on VDD, P+ on GND) — legitimate,
+    // so the junction check doesn't apply.
+    if (d.subRegionIds.length <= 1) continue;
     const wantRail = d.type === "p" ? "vcc" : "gnd";
     const wrongRail = d.type === "p" ? "gnd" : "vcc";
     for (const sid of d.subRegionIds) {
@@ -2147,6 +2152,12 @@ function classifyNets(
     else net.role = "internal";
   }
 
+  // A rail with no matching source/drain is only suspicious in a cell
+  // that actually has rail-anchored logic. A pass-gate-only cell
+  // (transmission gate, analog switch) has no CMOS domain at all — its
+  // rails just feed the well/substrate taps — so there is nothing to
+  // enforce there.
+  if (domains.length === 0) return;
   for (const net of nets) {
     const t = tally.get(net.id)!;
     if (net.label === "vcc" && !t.pmosSD) {
@@ -2204,11 +2215,18 @@ function cellLevelChecks(
     });
   }
   if (domains.length === 0 && realTransistors.length > 0) {
+    // Pass-gate-only cells (transmission gate / analog switch) have no
+    // rail-anchored pull-up/pull-down by design — that's a note, not a
+    // defect. Anything else with transistors but no domain is suspicious.
+    const passOnly = realTransistors.every(
+      (t) => t.role === "tg" || t.role === "pass",
+    );
     warnings.push({
-      severity: "warning",
+      severity: passOnly ? "info" : "warning",
       code: "NO_OUTPUT",
-      message:
-        "no CMOS pull-up/pull-down pair found — output couldn't be identified",
+      message: passOnly
+        ? "no CMOS pull-up/pull-down pair — pass-gate-only cell (no rail-driven output)"
+        : "no CMOS pull-up/pull-down pair found — output couldn't be identified",
     });
   } else {
     // Multi-DOMAIN is expected for chained combinational cells (AND2 =

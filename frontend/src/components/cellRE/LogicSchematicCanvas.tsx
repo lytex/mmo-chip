@@ -113,7 +113,7 @@ export function LogicSchematicCanvas({
       setLayoutError(null);
       return;
     }
-    if (extraction.domains.length === 0) {
+    if (!hasLogicContent(extraction)) {
       setLayout(null);
       setLayoutError(null);
       return;
@@ -246,13 +246,13 @@ export function LogicSchematicCanvas({
       </Placeholder>
     );
   }
-  if (extraction.domains.length === 0) {
+  if (!hasLogicContent(extraction)) {
     return (
       <Placeholder host={hostRef}>
-        <div>no CMOS domains detected</div>
+        <div>nothing to draw yet</div>
         <div style={{ fontSize: 11, color: "var(--ink3)", marginTop: 6 }}>
-          the cell needs at least one CMOS pull-up/pull-down pair to
-          render a logic netlist
+          the cell needs at least one CMOS pull-up/pull-down pair,
+          transmission gate or pass transistor to render a logic netlist
         </div>
       </Placeholder>
     );
@@ -485,6 +485,20 @@ function CopyDumpButton({
     >
       {copied ? "copied ✓" : "copy text"}
     </button>
+  );
+}
+
+/** True when the extraction has anything the logic netlist can draw: a
+ *  CMOS domain, a transmission gate, or a pass transistor. Pass-gate-only
+ *  cells (analog switches) have no domain and no rail-anchored device,
+ *  but are still perfectly drawable. */
+function hasLogicContent(
+  extraction: Extract<CellExtraction, { kind: "inferred" }>,
+): boolean {
+  return (
+    extraction.domains.length > 0 ||
+    extraction.transmissionGates.length > 0 ||
+    extraction.transistors.some((t) => t.role === "pass" && t.type !== "unknown")
   );
 }
 
